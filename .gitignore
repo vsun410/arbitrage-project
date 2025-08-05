@@ -1,0 +1,155 @@
+# 김프 아비트라지 시스템 .gitignore
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# === 가상환경 ===
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# === 환경 변수 및 설정 (보안 중요!) ===
+.env
+.env.local
+.env.production
+.env.staging
+.env.test
+config/local.yml
+config/production.yml
+config/secrets.yml
+
+# === IDE 및 에디터 ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# === 로그 파일 ===
+*.log
+logs/
+log/
+
+# === 데이터베이스 ===
+*.db
+*.sqlite
+*.sqlite3
+
+# === 테스트 관련 ===
+.pytest_cache/
+.tox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.cache
+nosetests.xml
+.testmondata
+
+# === MyPy ===
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# === Jupyter Notebook ===
+.ipynb_checkpoints
+
+# === 백업 파일 ===
+*.bak
+*.backup
+*~
+
+# === 임시 파일 ===
+*.tmp
+*.temp
+.tmp/
+tmp/
+
+# === Docker ===
+.dockerenv
+
+# === TaskMaster ===
+.taskmaster/tasks/tasks.json
+.taskmaster/reports/
+
+# === 거래 데이터 (민감 정보) ===
+data/raw/
+data/trades/
+backups/
+*.csv
+*.json.bak
+
+# === API 키 파일 (절대 커밋하면 안됨!) ===
+keys/
+secrets/
+*.key
+*.pem
+*.p12
+
+# === 성능 분석 ===
+.prof
+*.prof
+
+# === 문서 빌드 ===
+docs/_build/
+site/
+
+# === macOS ===
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# === Windows ===
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# === Linux ===
+*~
+
+# === Node.js ===
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+.npm
+.eslintcache
+
+# === PM2 (프로세스 관리) ===
+.pm2/
+ecosystem.config.js.backup
+
+# === 프로젝트 특화 ===
+# 백테스팅 결과
+backtest_results/
+# 실시간 데이터 캐시
+cache/
+# 시스템 상태 스냅샷
+snapshots/

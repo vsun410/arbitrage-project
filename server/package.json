@@ -1,0 +1,35 @@
+{
+  "name": "kimp-arbitrage-vultr",
+  "version": "1.0.0",
+  "description": "Vultr 클라우드 최적화 김프 아비트라지 모니터링 시스템",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "node app.js",
+    "restart": "pkill -f 'node app.js' && nohup node app.js > logs/app.log 2>&1 &",
+    "status": "ps aux | grep 'node app.js'",
+    "logs": "tail -f logs/app.log",
+    "stop": "pkill -f 'node app.js'"
+  },
+  "keywords": [
+    "kimchi-premium",
+    "arbitrage",
+    "cryptocurrency",
+    "upbit",
+    "binance",
+    "trading",
+    "vultr"
+  ],
+  "author": "김프 아비트라지 시스템",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "jsonwebtoken": "^9.0.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "private"
+  }
+}
