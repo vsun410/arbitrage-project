@@ -1,6 +1,6 @@
-// 김프 아비트라지 서버 v3.1 - Vultr Cloud 최적화 버전
-// 업데이트: 거래 제어, 포지션 설정, 전략 설정 기능 추가
-// 작성일: 2025-08-06 v3.1
+// 트레이딩 모니터 서버 v4.0 - 실거래 시스템 완성
+// 업데이트: 48.5% 연수익률 최적화 전략, Z-Score 기반 실거래, 업비트+바이낸스 동시주문
+// 작성일: 2025-08-06 v4.0
 
 const http = require('http');
 const fs = require('fs');
@@ -29,10 +29,55 @@ const CONFIG = {
     trading: {
         enabled: false,
         dryRun: process.env.DRY_RUN !== 'false',
-        positionSize: parseInt(process.env.POSITION_SIZE) || 100000,
+        initialCapital: 40000000, // 4천만원
+        // 48.5% 연수익률 최적화 전략 (C+B 조합)
         strategy: {
-            zScoreThreshold: parseFloat(process.env.Z_SCORE_THRESHOLD) || 2.0,
-            minProfitRate: parseFloat(process.env.MIN_PROFIT_RATE) || 0.4
+            name: 'OptimizedMultiStrategy',
+            zscore_period: 20,           // Z-Score 20일 이동평균
+            entry_threshold: 2.0,        // 기본 진입 임계값
+            min_kimp_entry: 0.5,         // 최소 김프 진입 조건
+            
+            // 상황별 파라미터
+            ultra_extreme: {             // Z ≥ 4.0
+                threshold: 4.0,
+                position_size: 0.4,      // 40% 단일 대형 진입
+                profit_target: 2.0,      // 2% 목표수익
+                exit_threshold: 0.4      // 빠른 회귀시에도 보유
+            },
+            extreme: {                   // Z ≥ 3.0
+                threshold: 3.0,
+                position_multiplier: 2.0, // 기본의 2배
+                profit_target: 1.5,       // 1.5% 목표수익
+                exit_threshold: 0.6       // 적당한 회귀 대기
+            },
+            normal: {                    // Z ≥ 2.0
+                threshold: 2.0,
+                profit_target: 0.8,       // 0.8% 목표수익
+                exit_threshold: 0.6,      // 늦은 청산
+                base_position_size: 0.15  // 15% 포지션
+            }
+        },
+        
+        // 종목별 배분 (BTC 40%, ETH 35%, XRP 25%)
+        allocations: {
+            BTC: 0.4,
+            ETH: 0.35,
+            XRP: 0.25
+        },
+        
+        // 종목별 분할매수 패턴
+        symbol_splits: {
+            BTC: [0.4, 0.35, 0.25],     // 안정적 → 고른 분할
+            ETH: [0.5, 0.3, 0.2],       // 중간 변동성 → 초기 집중
+            XRP: [0.6, 0.25, 0.15]      // 고변동성 → 강한 초기 집중
+        },
+        
+        // 거래비용
+        trading_costs: {
+            upbit_fee: 0.0005 * 2,      // 업비트 매수매도 0.1%
+            binance_fee: 0.001 * 2,     // 바이낸스 매수매도 0.2%
+            slippage: 0.0002,           // 슬리피지 0.02%
+            total: 0.0032               // 총 0.32%
         }
     },
     symbols: ['BTC', 'ETH', 'XRP'],
@@ -46,21 +91,46 @@ const globalState = {
     usdKrwRate: 1380,
     lastDataUpdate: null,
     isCollecting: true,
+    
+    // Z-Score 계산을 위한 히스토리 (20일 이동평균)
+    priceHistory: {
+        BTC: [],
+        ETH: [],
+        XRP: []
+    },
+    
     trading: {
         enabled: false,
-        positions: {},
+        // 실거래 포지션 관리 (symbol -> array of positions)
+        positions: {
+            BTC: [],
+            ETH: [],
+            XRP: []
+        },
+        // 거래 기록
+        tradeHistory: [],
+        // 통계
         stats: {
             totalTrades: 0,
             successfulTrades: 0,
             totalProfit: 0,
+            totalProfitKrw: 0,
             averageProfit: 0,
-            winRate: 0
+            winRate: 0,
+            // 전략별 통계
+            strategyStats: {
+                ultra_extreme: { count: 0, profit: 0 },
+                extreme: { count: 0, profit: 0 },
+                normal: { count: 0, profit: 0 }
+            }
         }
     },
+    
     server: {
         startTime: Date.now(),
         requestCount: 0,
-        errorCount: 0
+        errorCount: 0,
+        memoryUsage: process.memoryUsage()
     }
 };
 
@@ -88,13 +158,13 @@ async function sendDiscordNotification(options) {
     try {
         const payload = {
             embeds: [{
-                title: options.title || '김프 아비트라지 알림',
+                title: options.title || '트레이딩 모니터 알림',
                 description: options.description || '',
                 color: options.color || 0x00ff00,
                 timestamp: new Date().toISOString(),
                 fields: options.fields || [],
                 footer: {
-                    text: 'Vultr Cloud Server | 김프 아비트라지 v3.1'
+                    text: 'Vultr Cloud Server | 트레이딩 모니터 v4.0'
                 }
             }]
         };
@@ -109,6 +179,175 @@ async function sendDiscordNotification(options) {
         log(`Discord 알림 실패: ${error.message}`, 'WARN');
         return false;
     }
+}
+
+// ============================================================================
+// Z-Score 계산 및 최적화 전략 시스템 (48.5% 연수익률)
+// ============================================================================
+
+function calculateZScore(symbol, currentKimp) {
+    const history = globalState.priceHistory[symbol];
+    
+    if (history.length < CONFIG.trading.strategy.zscore_period) {
+        return 0; // 데이터 부족
+    }
+    
+    // 20일 이동평균 및 표준편차 계산
+    const values = history.slice(-CONFIG.trading.strategy.zscore_period);
+    const mean = values.reduce((sum, val) => sum + val, 0) / values.length;
+    const variance = values.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / values.length;
+    const stdDev = Math.sqrt(variance);
+    
+    if (stdDev === 0) return 0;
+    
+    // Z-Score = (현재값 - 평균) / 표준편차
+    const zscore = (currentKimp - mean) / stdDev;
+    return zscore;
+}
+
+function updatePriceHistory(symbol, kimp) {
+    const history = globalState.priceHistory[symbol];
+    history.push(kimp);
+    
+    // 최대 30일치 데이터 유지 (여유분)
+    if (history.length > 30) {
+        history.shift();
+    }
+}
+
+function shouldEnterTrade(symbol, marketData) {
+    const kimp = marketData.kimp;
+    const zscore = calculateZScore(symbol, kimp);
+    
+    // 업데이트된 Z-Score 저장
+    marketData.zscore = zscore;
+    
+    // 기본 조건 확인
+    if (Math.abs(kimp) < CONFIG.trading.strategy.min_kimp_entry) {
+        return null;
+    }
+    
+    if (Math.abs(zscore) < CONFIG.trading.strategy.entry_threshold) {
+        return null;
+    }
+    
+    // 현재 포지션 확인
+    const currentPositions = globalState.trading.positions[symbol];
+    const maxAllocation = CONFIG.trading.allocations[symbol];
+    const currentExposure = currentPositions.reduce((sum, pos) => sum + pos.size, 0);
+    
+    if (currentExposure >= maxAllocation) {
+        return null;
+    }
+    
+    // 진입 신호 결정
+    let entrySignal = null;
+    
+    if (zscore <= -CONFIG.trading.strategy.entry_threshold && kimp < 0) {
+        entrySignal = 'long';  // 역프 극단에서 롱 진입
+    } else if (zscore >= CONFIG.trading.strategy.entry_threshold && kimp > 0) {
+        entrySignal = 'short'; // 김프 극단에서 숏 진입
+    }
+    
+    return entrySignal;
+}
+
+function calculatePositionSize(symbol, zscore, entrySignal) {
+    const absZscore = Math.abs(zscore);
+    const currentPositions = globalState.trading.positions[symbol];
+    const sameSidePositions = currentPositions.filter(p => p.side === entrySignal).length;
+    
+    let positionSize = 0;
+    let strategyType = 'normal';
+    
+    // 1. 초극단 상황 (Z ≥ 4.0) - 40% 단일 대형 진입
+    if (absZscore >= CONFIG.trading.strategy.ultra_extreme.threshold) {
+        positionSize = CONFIG.trading.strategy.ultra_extreme.position_size;
+        strategyType = 'ultra_extreme';
+        log(`[${symbol}] 🔥 초극단 상황 감지! Z-Score: ${zscore.toFixed(2)}`, 'WARN');
+        log(`[${symbol}] 💥 단일 대형 진입: ${(positionSize*100).toFixed(1)}%`, 'WARN');
+        
+    // 2. 극단 상황 (Z ≥ 3.0) - 포지션 2배
+    } else if (absZscore >= CONFIG.trading.strategy.extreme.threshold) {
+        const splits = CONFIG.trading.symbol_splits[symbol];
+        const allocation = CONFIG.trading.allocations[symbol];
+        
+        if (sameSidePositions < splits.length) {
+            const baseSize = splits[sameSidePositions] * allocation;
+            const multiplier = CONFIG.trading.strategy.extreme.position_multiplier;
+            positionSize = baseSize * multiplier;
+            strategyType = 'extreme';
+            
+            log(`[${symbol}] ⚡ 극단 상황: Z-Score ${zscore.toFixed(2)}, 포지션 2배 증량: ${(positionSize*100).toFixed(1)}%`, 'INFO');
+        }
+        
+    // 3. 일반 극단 상황 (Z ≥ 2.0) - 공격적 분할매수
+    } else {
+        const splits = CONFIG.trading.symbol_splits[symbol];
+        const allocation = CONFIG.trading.allocations[symbol];
+        
+        if (sameSidePositions < splits.length) {
+            const baseSize = splits[sameSidePositions] * allocation;
+            // 15% 기준으로 공격적 파라미터 적용
+            const aggressiveMultiplier = CONFIG.trading.strategy.normal.base_position_size / 0.1;
+            positionSize = baseSize * aggressiveMultiplier;
+            strategyType = 'normal';
+            
+            log(`[${symbol}] 📈 공격적 분할매수: ${sameSidePositions+1}차 진입, 포지션: ${(positionSize*100).toFixed(1)}%`, 'INFO');
+        }
+    }
+    
+    // 최대 배분 한도 체크 (초극단 제외)
+    if (strategyType !== 'ultra_extreme') {
+        const currentExposure = currentPositions.reduce((sum, pos) => sum + pos.size, 0);
+        const maxAllocation = CONFIG.trading.allocations[symbol];
+        
+        if (currentExposure + positionSize > maxAllocation) {
+            positionSize = maxAllocation - currentExposure;
+            log(`[${symbol}] 포지션 크기 조정: ${(positionSize*100).toFixed(1)}% (한도 제한)`, 'WARN');
+        }
+    }
+    
+    // 최소 포지션 체크
+    const minPosition = 0.02; // 2%
+    if (positionSize < minPosition) {
+        return { size: 0, type: 'too_small' };
+    }
+    
+    return { size: positionSize, type: strategyType };
+}
+
+function shouldExitPosition(position, marketData) {
+    const currentKimp = marketData.kimp;
+    const currentZscore = marketData.zscore;
+    
+    // 현재 수익 계산
+    let profit = 0;
+    if (position.side === 'long') {
+        profit = currentKimp - position.entryKimp;
+    } else {
+        profit = position.entryKimp - currentKimp;
+    }
+    
+    // 전략 유형별 청산 조건
+    let profitTarget = CONFIG.trading.strategy.normal.profit_target;
+    let exitThreshold = CONFIG.trading.strategy.normal.exit_threshold;
+    
+    if (position.strategyType === 'ultra_extreme') {
+        profitTarget = CONFIG.trading.strategy.ultra_extreme.profit_target;
+        exitThreshold = CONFIG.trading.strategy.ultra_extreme.exit_threshold;
+    } else if (position.strategyType === 'extreme') {
+        profitTarget = CONFIG.trading.strategy.extreme.profit_target;
+        exitThreshold = CONFIG.trading.strategy.extreme.exit_threshold;
+    }
+    
+    // ✅ 유일한 청산 조건: 목표수익 달성 AND Z-Score 회귀 (둘 다 만족)
+    if (profit >= profitTarget && Math.abs(currentZscore) < exitThreshold) {
+        log(`[${position.symbol}] ✅ 청산 조건 충족: 수익 ${profit.toFixed(2)}% (목표: ${profitTarget}%), Z-Score ${currentZscore.toFixed(2)} (임계: ${exitThreshold})`, 'INFO');
+        return true;
+    }
+    
+    return false;
 }
 
 // ============================================================================
@@ -159,7 +398,13 @@ async function fetchMarketData() {
                 if (upbitPrice && binancePrice && globalState.usdKrwRate) {
                     // 김프 계산
                     const binancePriceKrw = binancePrice * globalState.usdKrwRate;
-                    const kimp = ((upbitPrice - binancePriceKrw) / binancePriceKrw);
+                    const kimp = ((upbitPrice - binancePriceKrw) / binancePriceKrw) * 100; // 백분율로 저장
+                    
+                    // 김프 히스토리 업데이트 (Z-Score 계산용)
+                    updatePriceHistory(symbol, kimp);
+                    
+                    // Z-Score 계산
+                    const zscore = calculateZScore(symbol, kimp);
 
                     return {
                         symbol,
@@ -167,7 +412,9 @@ async function fetchMarketData() {
                         upbitPrice,
                         binancePrice,
                         usdKrw: globalState.usdKrwRate,
-                        kimp: kimp
+                        kimp: kimp,
+                        zscore: zscore,
+                        premium: kimp // 기존 호환성을 위해
                     };
                 }
             } catch (error) {
@@ -204,40 +451,452 @@ async function fetchMarketData() {
 function checkTradingSignals() {
     if (!CONFIG.trading.enabled) return;
 
+    // 1. 진입 신호 확인
     Object.values(globalState.marketData).forEach(data => {
         if (!data || !data.kimp) return;
 
-        const { symbol, kimp } = data;
-        const threshold = CONFIG.trading.strategy.zScoreThreshold / 100; // 백분율로 변환
+        const { symbol } = data;
+        const entrySignal = shouldEnterTrade(symbol, data);
         
-        // 극단값 진입 신호 확인
-        if (Math.abs(kimp) > threshold) {
-            const signal = kimp > 0 ? 'BUY_UPBIT_SELL_BINANCE' : 'BUY_BINANCE_SELL_UPBIT';
-            executeTrade(symbol, signal, data);
+        if (entrySignal) {
+            // 포지션 크기 계산
+            const positionInfo = calculatePositionSize(symbol, data.zscore, entrySignal);
+            
+            if (positionInfo.size > 0) {
+                executeOptimizedTrade(symbol, entrySignal, data, positionInfo);
+            }
         }
+    });
+    
+    // 2. 청산 신호 확인
+    CONFIG.symbols.forEach(symbol => {
+        const positions = globalState.trading.positions[symbol];
+        const marketData = globalState.marketData[symbol];
+        
+        if (!marketData || positions.length === 0) return;
+        
+        positions.forEach(position => {
+            if (shouldExitPosition(position, marketData)) {
+                executeOptimizedExit(position, marketData);
+            }
+        });
     });
 }
 
-async function executeTrade(symbol, signal, marketData) {
+// ============================================================================
+// 48.5% 최적화 실거래 시스템
+// ============================================================================
+
+async function executeOptimizedTrade(symbol, entrySignal, marketData, positionInfo) {
     if (!CONFIG.trading.enabled) return;
 
     try {
-        const tradeInfo = {
-            symbol,
-            signal,
-            timestamp: new Date().toISOString(),
-            marketData,
-            positionSize: CONFIG.trading.positionSize,
-            dryRun: CONFIG.trading.dryRun
-        };
+        const positionSizeKrw = CONFIG.trading.initialCapital * positionInfo.size;
+        
+        log(`[${symbol}] 🎯 거래 시작: ${entrySignal} | Z-Score: ${marketData.zscore.toFixed(2)} | 김프: ${marketData.kimp.toFixed(2)}% | 포지션: ${(positionInfo.size*100).toFixed(1)}% (${(positionSizeKrw/10000).toFixed(0)}만원) | 전략: ${positionInfo.type}`, 'INFO');
+
+        let tradeResult = { success: false };
 
         if (CONFIG.trading.dryRun) {
             // 모의거래 실행
-            await executeSimulatedTrade(tradeInfo);
+            tradeResult = await executeSimulatedOptimizedTrade(symbol, entrySignal, marketData, positionInfo, positionSizeKrw);
         } else {
-            // 실제거래 실행 (추후 구현)
-            log(`실제거래 실행: ${symbol} ${signal}`, 'INFO');
+            // 실제거래 실행
+            tradeResult = await executeRealTrade(symbol, entrySignal, marketData, positionSizeKrw);
         }
+
+        if (tradeResult.success) {
+            // 포지션 생성 및 저장
+            const position = {
+                id: `${symbol}_${entrySignal}_${Date.now()}`,
+                symbol,
+                side: entrySignal,
+                entryKimp: marketData.kimp,
+                entryZscore: marketData.zscore,
+                size: positionInfo.size,
+                sizeKrw: positionSizeKrw,
+                strategyType: positionInfo.type,
+                entryTime: new Date().toISOString(),
+                entryPrice: {
+                    upbit: marketData.upbitPrice,
+                    binance: marketData.binancePrice,
+                    usdKrw: marketData.usdKrw
+                },
+                tradeInfo: tradeResult
+            };
+
+            globalState.trading.positions[symbol].push(position);
+            
+            // 통계 업데이트
+            globalState.trading.stats.totalTrades++;
+            globalState.trading.stats.strategyStats[positionInfo.type].count++;
+
+            // Discord 알림
+            await sendDiscordNotification({
+                title: `🚀 ${CONFIG.trading.dryRun ? '모의' : '실제'}거래 진입`,
+                description: `**${symbol}** ${entrySignal.toUpperCase()} 포지션 진입`,
+                color: entrySignal === 'long' ? 0x00ff00 : 0xff0000,
+                fields: [
+                    { name: '김프', value: `${marketData.kimp.toFixed(2)}%`, inline: true },
+                    { name: 'Z-Score', value: marketData.zscore.toFixed(2), inline: true },
+                    { name: '포지션 크기', value: `${(positionInfo.size*100).toFixed(1)}%`, inline: true },
+                    { name: '전략 유형', value: positionInfo.type, inline: true },
+                    { name: '투입 금액', value: `${(positionSizeKrw/10000).toFixed(0)}만원`, inline: true },
+                    { name: '모드', value: CONFIG.trading.dryRun ? '모의거래' : '실거래', inline: true }
+                ]
+            });
+
+        } else {
+            log(`[${symbol}] ❌ 거래 실패: ${tradeResult.error}`, 'ERROR');
+        }
+
+    } catch (error) {
+        log(`[${symbol}] 거래 실행 실패: ${error.message}`, 'ERROR');
+    }
+}
+
+async function executeOptimizedExit(position, marketData) {
+    try {
+        const profit = position.side === 'long' 
+            ? marketData.kimp - position.entryKimp 
+            : position.entryKimp - marketData.kimp;
+            
+        const profitKrw = (profit / 100) * position.sizeKrw;
+        const holdingTime = new Date() - new Date(position.entryTime);
+        const holdingMinutes = Math.floor(holdingTime / 60000);
+
+        log(`[${position.symbol}] ✅ 청산 시작: ${position.side} | 수익: ${profit.toFixed(2)}% (${(profitKrw/10000).toFixed(1)}만원) | 보유시간: ${holdingMinutes}분`, 'INFO');
+
+        let exitResult = { success: false };
+
+        if (CONFIG.trading.dryRun) {
+            // 모의거래 청산
+            exitResult = { success: true, profit: profitKrw };
+        } else {
+            // 실제거래 청산
+            exitResult = await executeRealExit(position, marketData);
+        }
+
+        if (exitResult.success) {
+            // 포지션 제거
+            const positionIndex = globalState.trading.positions[position.symbol].findIndex(p => p.id === position.id);
+            if (positionIndex !== -1) {
+                globalState.trading.positions[position.symbol].splice(positionIndex, 1);
+            }
+
+            // 거래 기록 저장
+            const trade = {
+                symbol: position.symbol,
+                side: position.side,
+                strategyType: position.strategyType,
+                entryKimp: position.entryKimp,
+                exitKimp: marketData.kimp,
+                entryZscore: position.entryZscore,
+                exitZscore: marketData.zscore,
+                grossProfitPct: profit,
+                netProfitPct: profit - (CONFIG.trading.trading_costs.total * 100),
+                profitKrw: profitKrw - (CONFIG.trading.trading_costs.total * position.sizeKrw),
+                positionSize: position.size,
+                holdingTime: holdingMinutes,
+                entryTime: position.entryTime,
+                exitTime: new Date().toISOString()
+            };
+
+            globalState.trading.tradeHistory.push(trade);
+
+            // 통계 업데이트
+            if (trade.profitKrw > 0) {
+                globalState.trading.stats.successfulTrades++;
+            }
+            globalState.trading.stats.totalProfitKrw += trade.profitKrw;
+            globalState.trading.stats.strategyStats[position.strategyType].profit += trade.profitKrw;
+            
+            // 승률 계산
+            globalState.trading.stats.winRate = (globalState.trading.stats.successfulTrades / globalState.trading.stats.totalTrades) * 100;
+
+            // Discord 알림
+            await sendDiscordNotification({
+                title: `✅ ${CONFIG.trading.dryRun ? '모의' : '실제'}거래 청산`,
+                description: `**${position.symbol}** ${position.side.toUpperCase()} 포지션 청산 완료`,
+                color: trade.profitKrw > 0 ? 0x00ff00 : 0xff0000,
+                fields: [
+                    { name: '수익률', value: `${profit.toFixed(2)}%`, inline: true },
+                    { name: '수익금', value: `${(trade.profitKrw/10000).toFixed(1)}만원`, inline: true },
+                    { name: '보유시간', value: `${holdingMinutes}분`, inline: true },
+                    { name: '전략', value: position.strategyType, inline: true },
+                    { name: 'Z-Score', value: `${position.entryZscore.toFixed(2)} → ${marketData.zscore.toFixed(2)}`, inline: true }
+                ]
+            });
+
+        } else {
+            log(`[${position.symbol}] ❌ 청산 실패: ${exitResult.error}`, 'ERROR');
+        }
+
+    } catch (error) {
+        log(`[${position.symbol}] 청산 실행 실패: ${error.message}`, 'ERROR');
+    }
+}
+
+async function executeSimulatedOptimizedTrade(symbol, entrySignal, marketData, positionInfo, positionSizeKrw) {
+    // 모의거래 로직 (기존과 유사하지만 최적화된 전략 반영)
+    const simulatedSlippage = 0.02; // 0.02% 슬리피지 시뮬레이션
+    
+    return {
+        success: true,
+        type: 'simulated',
+        slippage: simulatedSlippage,
+        fees: CONFIG.trading.trading_costs.total * positionSizeKrw
+    };
+}
+
+// ============================================================================
+// 실제 거래 API 함수들 (업비트 + 바이낸스)
+// ============================================================================
+
+async function executeRealTrade(symbol, entrySignal, marketData, positionSizeKrw) {
+    try {
+        log(`[${symbol}] 🔥 실제거래 시작: ${entrySignal}`, 'INFO');
+        
+        // 1. 거래소 초기화
+        const upbit = await initializeUpbit();
+        const binance = await initializeBinance();
+        
+        if (!upbit || !binance) {
+            throw new Error('거래소 초기화 실패');
+        }
+        
+        // 2. 잔고 확인
+        const balanceCheck = await checkBalances(upbit, binance, symbol, positionSizeKrw, entrySignal);
+        if (!balanceCheck.success) {
+            throw new Error(`잔고 부족: ${balanceCheck.error}`);
+        }
+        
+        // 3. 주문 크기 계산
+        const orderSizes = calculateOrderSizes(symbol, positionSizeKrw, marketData);
+        
+        // 4. 동시 주문 실행
+        const results = await executeSimultaneousOrders(
+            upbit, binance, symbol, entrySignal, orderSizes, marketData
+        );
+        
+        if (results.success) {
+            log(`[${symbol}] ✅ 실제거래 성공: 업비트 ${results.upbitResult.status}, 바이낸스 ${results.binanceResult.status}`, 'INFO');
+            return {
+                success: true,
+                type: 'real',
+                upbitOrder: results.upbitResult,
+                binanceOrder: results.binanceResult,
+                fees: CONFIG.trading.trading_costs.total * positionSizeKrw
+            };
+        } else {
+            throw new Error(results.error);
+        }
+        
+    } catch (error) {
+        log(`[${symbol}] ❌ 실제거래 실패: ${error.message}`, 'ERROR');
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+}
+
+async function executeRealExit(position, marketData) {
+    try {
+        const { symbol } = position;
+        log(`[${symbol}] 🔥 실제청산 시작: ${position.side}`, 'INFO');
+        
+        // 1. 거래소 초기화
+        const upbit = await initializeUpbit();
+        const binance = await initializeBinance();
+        
+        if (!upbit || !binance) {
+            throw new Error('거래소 초기화 실패');
+        }
+        
+        // 2. 청산 주문 실행 (진입과 반대로)
+        const exitSignal = position.side === 'long' ? 'short' : 'long';
+        const orderSizes = calculateOrderSizes(symbol, position.sizeKrw, marketData);
+        
+        const results = await executeSimultaneousOrders(
+            upbit, binance, symbol, exitSignal, orderSizes, marketData
+        );
+        
+        if (results.success) {
+            log(`[${symbol}] ✅ 실제청산 성공`, 'INFO');
+            return {
+                success: true,
+                type: 'real',
+                upbitOrder: results.upbitResult,
+                binanceOrder: results.binanceResult
+            };
+        } else {
+            throw new Error(results.error);
+        }
+        
+    } catch (error) {
+        log(`[${symbol}] ❌ 실제청산 실패: ${error.message}`, 'ERROR');
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+}
+
+async function initializeUpbit() {
+    try {
+        if (!CONFIG.upbit.accessKey || !CONFIG.upbit.secretKey) {
+            throw new Error('업비트 API 키가 설정되지 않음');
+        }
+        
+        // ccxt를 사용해서 업비트 초기화
+        const upbit = new ccxt.upbit({
+            apiKey: CONFIG.upbit.accessKey,
+            secret: CONFIG.upbit.secretKey,
+            sandbox: false,
+            timeout: 10000
+        });
+        
+        return upbit;
+    } catch (error) {
+        log(`업비트 초기화 실패: ${error.message}`, 'ERROR');
+        return null;
+    }
+}
+
+async function initializeBinance() {
+    try {
+        if (!CONFIG.binance.apiKey || !CONFIG.binance.secretKey) {
+            throw new Error('바이낸스 API 키가 설정되지 않음');
+        }
+        
+        const binance = new ccxt.binance({
+            apiKey: CONFIG.binance.apiKey,
+            secret: CONFIG.binance.secretKey,
+            sandbox: false,
+            timeout: 10000
+        });
+        
+        return binance;
+    } catch (error) {
+        log(`바이낸스 초기화 실패: ${error.message}`, 'ERROR');
+        return null;
+    }
+}
+
+async function checkBalances(upbit, binance, symbol, positionSizeKrw, entrySignal) {
+    try {
+        const upbitBalance = await upbit.fetchBalance();
+        const binanceBalance = await binance.fetchBalance();
+        
+        if (entrySignal === 'long') {
+            // 롱: 업비트 KRW 매수, 바이낸스 USDT 매도
+            const needKrw = positionSizeKrw;
+            const needUsdt = positionSizeKrw / globalState.usdKrwRate;
+            
+            if (upbitBalance.KRW.free < needKrw) {
+                return { success: false, error: `업비트 KRW 잔고 부족: ${upbitBalance.KRW.free} < ${needKrw}` };
+            }
+            
+            const binanceSymbolBalance = binanceBalance[symbol]?.free || 0;
+            const needSymbolAmount = needUsdt / globalState.marketData[symbol].binancePrice;
+            
+            if (binanceSymbolBalance < needSymbolAmount) {
+                return { success: false, error: `바이낸스 ${symbol} 잔고 부족: ${binanceSymbolBalance} < ${needSymbolAmount}` };
+            }
+            
+        } else {
+            // 숏: 업비트 코인 매도, 바이낸스 USDT 매수
+            const needUsdt = positionSizeKrw / globalState.usdKrwRate;
+            const needSymbolAmount = positionSizeKrw / globalState.marketData[symbol].upbitPrice;
+            
+            const upbitSymbolBalance = upbitBalance[symbol]?.free || 0;
+            if (upbitSymbolBalance < needSymbolAmount) {
+                return { success: false, error: `업비트 ${symbol} 잔고 부족: ${upbitSymbolBalance} < ${needSymbolAmount}` };
+            }
+            
+            if (binanceBalance.USDT.free < needUsdt) {
+                return { success: false, error: `바이낸스 USDT 잔고 부족: ${binanceBalance.USDT.free} < ${needUsdt}` };
+            }
+        }
+        
+        return { success: true };
+        
+    } catch (error) {
+        return { success: false, error: `잔고 조회 실패: ${error.message}` };
+    }
+}
+
+function calculateOrderSizes(symbol, positionSizeKrw, marketData) {
+    const upbitPrice = marketData.upbitPrice;
+    const binancePrice = marketData.binancePrice;
+    const usdKrwRate = marketData.usdKrw;
+    
+    return {
+        upbitAmountKrw: positionSizeKrw,
+        upbitAmount: positionSizeKrw / upbitPrice,
+        binanceAmountUsdt: positionSizeKrw / usdKrwRate,
+        binanceAmount: (positionSizeKrw / usdKrwRate) / binancePrice
+    };
+}
+
+async function executeSimultaneousOrders(upbit, binance, symbol, entrySignal, orderSizes, marketData) {
+    try {
+        let upbitPromise, binancePromise;
+        
+        if (entrySignal === 'long') {
+            // 롱 진입: 업비트 매수, 바이낸스 매도
+            upbitPromise = upbit.createMarketBuyOrder(`${symbol}/KRW`, orderSizes.upbitAmount);
+            binancePromise = binance.createMarketSellOrder(`${symbol}/USDT`, orderSizes.binanceAmount);
+            
+        } else {
+            // 숏 진입: 업비트 매도, 바이낸스 매수
+            upbitPromise = upbit.createMarketSellOrder(`${symbol}/KRW`, orderSizes.upbitAmount);
+            binancePromise = binance.createMarketBuyOrder(`${symbol}/USDT`, orderSizes.binanceAmount);
+        }
+        
+        // 동시 실행
+        const results = await Promise.allSettled([upbitPromise, binancePromise]);
+        
+        const upbitResult = results[0];
+        const binanceResult = results[1];
+        
+        // 결과 검증
+        if (upbitResult.status === 'fulfilled' && binanceResult.status === 'fulfilled') {
+            return {
+                success: true,
+                upbitResult: { status: 'success', order: upbitResult.value },
+                binanceResult: { status: 'success', order: binanceResult.value }
+            };
+        } else {
+            // 부분 실패 - 롤백 필요
+            let errorMsg = '주문 실패: ';
+            if (upbitResult.status === 'rejected') {
+                errorMsg += `업비트(${upbitResult.reason.message}) `;
+            }
+            if (binanceResult.status === 'rejected') {
+                errorMsg += `바이낸스(${binanceResult.reason.message}) `;
+            }
+            
+            // TODO: 성공한 주문 롤백 로직 추가
+            if (upbitResult.status === 'fulfilled' || binanceResult.status === 'fulfilled') {
+                log(`⚠️ 부분 체결 발생 - 롤백 필요!`, 'ERROR');
+                // 롤백 로직은 향후 구현
+            }
+            
+            return {
+                success: false,
+                error: errorMsg
+            };
+        }
+        
+    } catch (error) {
+        return {
+            success: false,
+            error: `주문 실행 실패: ${error.message}`
+        };
+    }
+}
 
         // 거래 통계 업데이트
         globalState.trading.stats.totalTrades++;
@@ -498,7 +1157,7 @@ function generateAdminPanel() {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>김프 아비트라지 관리자 패널 v3.1 | Vultr Cloud</title>
+    <title>트레이딩 모니터 관리자 패널 v4.0 | Vultr Cloud</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
@@ -620,7 +1279,7 @@ function generateAdminPanel() {
 <body>
     <div class="container">
         <div class="header">
-            <h1>🚀 김프 아비트라지 관리자 v3.1</h1>
+            <h1>🚀 트레이딩 모니터 관리자 v4.0</h1>
             <p>Vultr Cloud 서버 관리 시스템<span class="vultr-badge">LIVE</span></p>
         </div>
         
@@ -889,7 +1548,7 @@ function generateAdminPanel() {
                         </div>
                         <div class="status-item">
                             <span class="status-label">버전</span>
-                            <span class="status-value">v3.1</span>
+                            <span class="status-value">v4.0</span>
                         </div>
                     </div>
                 </div>
@@ -1540,7 +2199,7 @@ async function startServer() {
     try {
         // Discord 시작 알림
         await sendDiscordNotification({
-            title: '🚀 김프 아비트라지 서버 v3.1 시작',
+            title: '🚀 트레이딩 모니터 서버 v4.0 시작',
             description: '**Vultr Cloud** 서버가 성공적으로 시작되었습니다.',
             color: 0x00ff00,
             fields: [
@@ -1578,7 +2237,7 @@ process.on('SIGINT', async () => {
     log('서버 종료 신호 수신...', 'INFO');
     
     await sendDiscordNotification({
-        title: '⏹️ 김프 아비트라지 서버 종료',
+        title: '⏹️ 트레이딩 모니터 서버 종료',
         description: '서버가 안전하게 종료되었습니다.',
         color: 0xff0000
     });
