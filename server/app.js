@@ -726,11 +726,188 @@ function generateAdminPanel() {
                 <div class="card">
                     <h2>📊 시스템 상태</h2>
                     <div id="system-status">
-                        <div class="status-item">
-                            <span class="status-label">서버 상태</span>
-                            <span class="status-value status-success">정상 운영</span>
+                        <div class="status-grid">
+                            <div class="status-item">
+                                <span class="status-label">서버 상태</span>
+                                <span class="status-value status-success">정상 운영</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="status-label">데이터 수집</span>
+                                <span class="status-value status-success">활성</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="status-label">마지막 업데이트</span>
+                                <span class="status-value" id="last-update">로딩 중...</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="status-label">API 요청 수</span>
+                                <span class="status-value" id="api-requests">0</span>
+                            </div>
                         </div>
                     </div>
+                </div>
+                <div class="card">
+                    <h2>💰 김프 현황</h2>
+                    <div id="kimp-status">
+                        <div class="status-grid">
+                            <div class="status-item">
+                                <span class="status-label">BTC 김프</span>
+                                <span class="status-value" id="btc-kimp">로딩 중...</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="status-label">ETH 김프</span>
+                                <span class="status-value" id="eth-kimp">로딩 중...</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="status-label">XRP 김프</span>
+                                <span class="status-value" id="xrp-kimp">로딩 중...</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="status-label">USD/KRW</span>
+                                <span class="status-value" id="exchange-rate">로딩 중...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- API 키 관리 탭 -->
+        <div id="apikeys" class="tab-content">
+            <div class="grid">
+                <div class="card">
+                    <h2>🔑 업비트 API 키</h2>
+                    <div class="form-group">
+                        <label class="input-label">Access Key</label>
+                        <input type="password" id="upbit-access-key" class="input-field" placeholder="업비트 Access Key">
+                        <div class="input-help">업비트에서 발급받은 Access Key를 입력하세요</div>
+                    </div>
+                    <div class="form-group">
+                        <label class="input-label">Secret Key</label>
+                        <input type="password" id="upbit-secret-key" class="input-field" placeholder="업비트 Secret Key">
+                        <div class="input-help">업비트에서 발급받은 Secret Key를 입력하세요</div>
+                    </div>
+                    <div class="flex-row">
+                        <button onclick="saveUpbitKeys()" class="btn btn-primary">저장</button>
+                        <button onclick="testUpbitConnection()" class="btn btn-secondary">연결 테스트</button>
+                    </div>
+                    <div id="upbit-status"></div>
+                </div>
+                <div class="card">
+                    <h2>🔄 바이낸스 API 키</h2>
+                    <div class="form-group">
+                        <label class="input-label">API Key</label>
+                        <input type="password" id="binance-api-key" class="input-field" placeholder="바이낸스 API Key">
+                        <div class="input-help">바이낸스에서 발급받은 API Key를 입력하세요</div>
+                    </div>
+                    <div class="form-group">
+                        <label class="input-label">Secret Key</label>
+                        <input type="password" id="binance-secret-key" class="input-field" placeholder="바이낸스 Secret Key">
+                        <div class="input-help">바이낸스에서 발급받은 Secret Key를 입력하세요</div>
+                    </div>
+                    <div class="flex-row">
+                        <button onclick="saveBinanceKeys()" class="btn btn-primary">저장</button>
+                        <button onclick="testBinanceConnection()" class="btn btn-secondary">연결 테스트</button>
+                    </div>
+                    <div id="binance-status"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 도메인 관리 탭 -->
+        <div id="domain" class="tab-content">
+            <div class="grid">
+                <div class="card">
+                    <h2>🌐 도메인 상태</h2>
+                    <div class="status-grid">
+                        <div class="status-item">
+                            <span class="status-label">현재 도메인</span>
+                            <span class="status-value" id="current-domain">vsun410.pe.kr</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">DNS 상태</span>
+                            <span class="status-value status-success">정상</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">Nginx 상태</span>
+                            <span class="status-value status-success">활성</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">SSL 상태</span>
+                            <span class="status-value">비활성</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="card">
+                    <h2>📋 도메인 설정 가이드</h2>
+                    <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; font-size: 13px; line-height: 1.6;">
+                        <p><strong>현재 도메인:</strong> vsun410.pe.kr</p>
+                        <p><strong>서버 IP:</strong> 141.164.55.221</p>
+                        <p><strong>접속 URL:</strong></p>
+                        <ul style="margin: 10px 0 10px 20px;">
+                            <li>http://vsun410.pe.kr - 메인 대시보드</li>
+                            <li>http://vsun410.pe.kr/admin - 관리자 패널</li>
+                            <li>http://141.164.55.221:8080 - 직접 접속</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 서버 관리 탭 -->
+        <div id="server" class="tab-content">
+            <div class="grid">
+                <div class="card">
+                    <h2>🔄 서버 제어</h2>
+                    <div class="form-group">
+                        <button onclick="restartServer()" class="btn btn-warning" style="width: 100%; margin-bottom: 10px;">
+                            🔄 서버 재시작
+                        </button>
+                        <button onclick="refreshConfig()" class="btn btn-primary" style="width: 100%; margin-bottom: 10px;">
+                            ⚡ 설정 새로고침
+                        </button>
+                        <button onclick="updateFromGithub()" class="btn btn-success" style="width: 100%;">
+                            📥 GitHub 업데이트
+                        </button>
+                    </div>
+                    <div id="server-status"></div>
+                </div>
+                <div class="card">
+                    <h2>📊 서버 정보</h2>
+                    <div class="status-grid">
+                        <div class="status-item">
+                            <span class="status-label">서버 시간</span>
+                            <span class="status-value" id="server-time">로딩 중...</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">업타임</span>
+                            <span class="status-value" id="uptime">로딩 중...</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">메모리 사용</span>
+                            <span class="status-value" id="memory-usage">로딩 중...</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">버전</span>
+                            <span class="status-value">v3.1</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 로그 탭 -->
+        <div id="logs" class="tab-content">
+            <div class="card">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h2>📋 시스템 로그</h2>
+                    <div>
+                        <button onclick="clearLogs()" class="btn btn-warning">로그 지우기</button>
+                        <button onclick="refreshLogs()" class="btn btn-primary">새로고침</button>
+                    </div>
+                </div>
+                <div id="admin-logs" style="background: #f8f9fa; border-radius: 8px; padding: 15px; max-height: 400px; overflow-y: auto; font-family: monospace; font-size: 13px; line-height: 1.4;">
+                    <div class="log-entry">시스템 로그가 여기에 표시됩니다...</div>
                 </div>
             </div>
         </div>
@@ -738,11 +915,308 @@ function generateAdminPanel() {
 
     <script>
         let tradingConfig = {};
+        let adminLogs = [];
         
         // 페이지 로드 시 거래 설정 로드
         document.addEventListener('DOMContentLoaded', function() {
             loadTradingConfig();
+            loadSystemStatus();
+            updateRealTimeData();
+            // 30초마다 실시간 데이터 업데이트
+            setInterval(updateRealTimeData, 30000);
         });
+        
+        // 실시간 데이터 업데이트
+        async function updateRealTimeData() {
+            try {
+                const response = await fetch('/api/market-data');
+                const data = await response.json();
+                
+                if (data.success) {
+                    // 김프 현황 업데이트
+                    if (data.BTC) {
+                        document.getElementById('btc-kimp').textContent = `+${data.BTC.premium.toFixed(2)}%`;
+                        document.getElementById('btc-kimp').className = 'status-value ' + getKimpStatusClass(data.BTC.premium);
+                    }
+                    if (data.ETH) {
+                        document.getElementById('eth-kimp').textContent = `+${data.ETH.premium.toFixed(2)}%`;
+                        document.getElementById('eth-kimp').className = 'status-value ' + getKimpStatusClass(data.ETH.premium);
+                    }
+                    if (data.XRP) {
+                        document.getElementById('xrp-kimp').textContent = `+${data.XRP.premium.toFixed(2)}%`;
+                        document.getElementById('xrp-kimp').className = 'status-value ' + getKimpStatusClass(data.XRP.premium);
+                    }
+                    
+                    // 환율 업데이트
+                    if (data.exchangeRate) {
+                        document.getElementById('exchange-rate').textContent = `${data.exchangeRate.toFixed(2)} KRW/USD`;
+                    }
+                    
+                    // 마지막 업데이트 시간
+                    document.getElementById('last-update').textContent = new Date().toLocaleString('ko-KR');
+                }
+            } catch (error) {
+                console.error('실시간 데이터 업데이트 실패:', error);
+            }
+        }
+        
+        // 김프 상태에 따른 클래스 반환
+        function getKimpStatusClass(premium) {
+            if (premium > 3) return 'status-danger';
+            if (premium > 1.5) return 'status-warning';
+            return 'status-success';
+        }
+        
+        // 시스템 상태 로드
+        async function loadSystemStatus() {
+            try {
+                const response = await fetch('/api/system-status');
+                const data = await response.json();
+                
+                if (data.success) {
+                    document.getElementById('api-requests').textContent = data.stats?.requestCount || '0';
+                    document.getElementById('server-time').textContent = new Date().toLocaleString('ko-KR');
+                    document.getElementById('uptime').textContent = data.uptime || '알 수 없음';
+                    
+                    const memUsage = data.stats?.memoryUsage;
+                    if (memUsage) {
+                        document.getElementById('memory-usage').textContent = `${(memUsage.used / 1024 / 1024).toFixed(1)}MB`;
+                    }
+                }
+            } catch (error) {
+                console.error('시스템 상태 로드 실패:', error);
+            }
+        }
+        
+        // API 키 관리 함수들
+        async function saveUpbitKeys() {
+            const accessKey = document.getElementById('upbit-access-key').value.trim();
+            const secretKey = document.getElementById('upbit-secret-key').value.trim();
+            
+            if (!accessKey || !secretKey) {
+                showAlert('upbit-status', '모든 필드를 입력해주세요.', 'error');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/save-upbit-keys', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ accessKey, secretKey })
+                });
+                
+                const result = await response.json();
+                if (result.success) {
+                    showAlert('upbit-status', '✅ 업비트 API 키가 저장되었습니다.', 'success');
+                    addAdminLog('업비트 API 키 저장 완료');
+                    
+                    // 입력 필드 초기화
+                    document.getElementById('upbit-access-key').value = '';
+                    document.getElementById('upbit-secret-key').value = '';
+                } else {
+                    showAlert('upbit-status', `❌ 저장 실패: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                showAlert('upbit-status', `오류 발생: ${error.message}`, 'error');
+            }
+        }
+        
+        async function saveBinanceKeys() {
+            const apiKey = document.getElementById('binance-api-key').value.trim();
+            const secretKey = document.getElementById('binance-secret-key').value.trim();
+            
+            if (!apiKey || !secretKey) {
+                showAlert('binance-status', '모든 필드를 입력해주세요.', 'error');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/save-binance-keys', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ apiKey, secretKey })
+                });
+                
+                const result = await response.json();
+                if (result.success) {
+                    showAlert('binance-status', '✅ 바이낸스 API 키가 저장되었습니다.', 'success');
+                    addAdminLog('바이낸스 API 키 저장 완료');
+                    
+                    // 입력 필드 초기화
+                    document.getElementById('binance-api-key').value = '';
+                    document.getElementById('binance-secret-key').value = '';
+                } else {
+                    showAlert('binance-status', `❌ 저장 실패: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                showAlert('binance-status', `오류 발생: ${error.message}`, 'error');
+            }
+        }
+        
+        // API 연결 테스트 함수들
+        async function testUpbitConnection() {
+            showAlert('upbit-status', '⏳ 업비트 연결을 테스트하고 있습니다...', 'info');
+            
+            try {
+                const response = await fetch('/api/test-upbit-connection', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                const result = await response.json();
+                if (result.success) {
+                    showAlert('upbit-status', `✅ 업비트 연결 성공! 계정: ${result.data?.account || '확인됨'}`, 'success');
+                } else {
+                    showAlert('upbit-status', `❌ 업비트 연결 실패: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                showAlert('upbit-status', `연결 테스트 중 오류 발생: ${error.message}`, 'error');
+            }
+        }
+        
+        async function testBinanceConnection() {
+            showAlert('binance-status', '⏳ 바이낸스 연결을 테스트하고 있습니다...', 'info');
+            
+            try {
+                const response = await fetch('/api/test-binance-connection', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                const result = await response.json();
+                if (result.success) {
+                    showAlert('binance-status', `✅ 바이낸스 연결 성공! 계정: ${result.data?.account || '확인됨'}`, 'success');
+                } else {
+                    showAlert('binance-status', `❌ 바이낸스 연결 실패: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                showAlert('binance-status', `연결 테스트 중 오류 발생: ${error.message}`, 'error');
+            }
+        }
+        
+        // 서버 관리 함수들
+        async function restartServer() {
+            if (!confirm('서버를 재시작하시겠습니까? 잠시 동안 서비스가 중단됩니다.')) return;
+            
+            showAlert('server-status', '🔄 서버를 재시작하고 있습니다...', 'info');
+            addAdminLog('서버 재시작 요청');
+            
+            try {
+                const response = await fetch('/api/restart-server', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                const result = await response.json();
+                showAlert('server-status', result.message || '서버 재시작이 요청되었습니다.', result.success ? 'success' : 'error');
+                
+                if (result.success) {
+                    setTimeout(() => {
+                        showAlert('server-status', '⏳ 서버 재시작 중... 30초 후 자동 새로고침됩니다.', 'info');
+                        setTimeout(() => window.location.reload(), 30000);
+                    }, 2000);
+                }
+            } catch (error) {
+                showAlert('server-status', `서버 재시작 실패: ${error.message}`, 'error');
+            }
+        }
+        
+        async function refreshConfig() {
+            showAlert('server-status', '⚡ 설정을 새로고침하고 있습니다...', 'info');
+            addAdminLog('설정 새로고침 요청');
+            
+            try {
+                const response = await fetch('/api/refresh-config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                const result = await response.json();
+                showAlert('server-status', result.message || '설정이 새로고침되었습니다.', result.success ? 'success' : 'error');
+                
+                if (result.success) {
+                    loadTradingConfig();
+                    loadSystemStatus();
+                }
+            } catch (error) {
+                showAlert('server-status', `설정 새로고침 실패: ${error.message}`, 'error');
+            }
+        }
+        
+        async function updateFromGithub() {
+            if (!confirm('GitHub에서 최신 코드를 가져와 업데이트하시겠습니까?')) return;
+            
+            showAlert('server-status', '📥 GitHub에서 업데이트를 가져오고 있습니다...', 'info');
+            addAdminLog('GitHub 업데이트 요청');
+            
+            try {
+                const response = await fetch('/api/github-update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                const result = await response.json();
+                showAlert('server-status', result.message || 'GitHub 업데이트가 완료되었습니다.', result.success ? 'success' : 'error');
+                
+                if (result.success) {
+                    setTimeout(() => {
+                        showAlert('server-status', '⏳ 서버 재시작 중... 잠시 후 새로고침됩니다.', 'info');
+                        setTimeout(() => window.location.reload(), 15000);
+                    }, 3000);
+                }
+            } catch (error) {
+                showAlert('server-status', `GitHub 업데이트 실패: ${error.message}`, 'error');
+            }
+        }
+        
+        // 로그 관리 함수들
+        function addAdminLog(message) {
+            const timestamp = new Date().toLocaleString('ko-KR');
+            const logEntry = `[${timestamp}] ${message}`;
+            adminLogs.push(logEntry);
+            
+            // 최대 100개 로그만 유지
+            if (adminLogs.length > 100) {
+                adminLogs = adminLogs.slice(-100);
+            }
+            
+            updateLogDisplay();
+        }
+        
+        function updateLogDisplay() {
+            const logContainer = document.getElementById('admin-logs');
+            if (logContainer && adminLogs.length > 0) {
+                logContainer.innerHTML = adminLogs.map(log => 
+                    `<div class="log-entry">${log}</div>`
+                ).join('');
+                logContainer.scrollTop = logContainer.scrollHeight;
+            }
+        }
+        
+        function clearLogs() {
+            if (confirm('모든 로그를 지우시겠습니까?')) {
+                adminLogs = [];
+                updateLogDisplay();
+                document.getElementById('admin-logs').innerHTML = '<div class="log-entry">로그가 지워졌습니다.</div>';
+            }
+        }
+        
+        function refreshLogs() {
+            addAdminLog('로그 새로고침');
+        }
+        
+        // 유틸리티 함수들
+        function showAlert(elementId, message, type) {
+            const element = document.getElementById(elementId);
+            if (!element) return;
+            
+            const alertClass = type === 'success' ? 'alert-success' : 
+                             type === 'error' ? 'alert-error' : 
+                             type === 'warning' ? 'alert-warning' : 'alert-info';
+            
+            element.innerHTML = `<div class="alert ${alertClass}" style="margin-top: 15px;">${message}</div>`;
+            setTimeout(() => { element.innerHTML = ''; }, 8000);
+        }
         
         function showTab(tabName) {
             document.querySelectorAll('.tab-content').forEach(content => {
