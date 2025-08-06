@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 김프 아비트라지 자동매매 시스템
 
 한국과 해외 암호화폐 거래소 간의 가격 차이(김치 프리미엄)를 활용한 자동매매 시스템입니다.
@@ -191,3 +192,7 @@ docker-compose restart
 ---
 
 **주의**: API 키는 절대 공개하지 마세요. `.env` 파일을 Git에 커밋하지 않도록 주의하세요.
+=======
+# arbitrage-project
+kimp-arbitrage
+>>>>>>> 62cf9c9e9b5c63bba754d87227a1cbdc627cd6ed

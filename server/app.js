@@ -3,9 +3,15 @@ const fs = require('fs');
 const path = require('path');
 
 /**
- * Vultr 클라우드 최적화된 김프 아비트라지 서버 v2.1
+ * Vultr 클라우드 최적화된 김프 아비트라지 서버 v3.0 (도메인 관리 통합)
  * 
- * 특징:
+ * 🆕 새로운 기능:
+ * - 🌐 도메인 자동 등록 및 관리
+ * - 🔧 Nginx 리버스 프록시 자동 설정
+ * - 🔍 DNS 상태 실시간 확인
+ * - 📋 관리자 패널에서 원클릭 도메인 등록
+ * 
+ * 기존 특징:
  * - 메모리 사용량 최소화 (1GB 서버 최적화)
  * - API 호출 효율화 및 에러 처리
  * - 자동 정리 및 로그 관리
@@ -39,7 +45,10 @@ const CONFIG = {
         extremeKimp: 5.0,      // 5% 이상 김프 시 알림
         highMemory: 512,       // 512MB 이상 메모리 사용 시 알림
         errorCount: 10         // 10회 이상 에러 시 알림
-    }
+    },
+    
+    // 도메인 설정
+    currentServerIp: '141.164.55.221'  // Vultr 서버 IP
 };
 
 // 글로벌 상태 (메모리 효율적)
@@ -66,6 +75,14 @@ let globalState = {
             connected: false,
             lastTest: null
         }
+    },
+    
+    // 도메인 관리 상태
+    domain: {
+        current: process.env.DOMAIN || '',
+        lastDnsCheck: null,
+        nginxEnabled: false,
+        sslEnabled: false
     },
     
     // 통계
@@ -740,11 +757,402 @@ function updateEnvVariable(key, value) {
         if (key === 'BINANCE_API_KEY') globalState.apiKeys.binance.key = value;
         if (key === 'BINANCE_SECRET_KEY') globalState.apiKeys.binance.secret = value;
         if (key === 'DISCORD_WEBHOOK_URL') CONFIG.discordWebhookUrl = value;
+        if (key === 'DOMAIN') globalState.domain.current = value;
         
         return saveEnvFile(envData);
     } catch (error) {
         log(`환경 변수 업데이트 실패 (${key}): ${error.message}`, 'ERROR');
         return false;
+    }
+}
+
+// 🌐 도메인 관리 유틸리티 함수들
+const domainUtils = {
+    // 도메인 유효성 검사
+    validateDomain(domain) {
+        const domainRegex = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+        return domainRegex.test(domain);
+    },
+
+    // DNS 확인
+    async checkDnsRecord(domain) {
+        const { spawn } = require('child_process');
+        
+        return new Promise((resolve, reject) => {
+            const nslookup = spawn('nslookup', [domain]);
+            let output = '';
+            let error = '';
+            
+            nslookup.stdout.on('data', (data) => {
+                output += data.toString();
+            });
+            
+            nslookup.stderr.on('data', (data) => {
+                error += data.toString();
+            });
+            
+            nslookup.on('close', (code) => {
+                if (code === 0) {
+                    // IP 주소 추출
+                    const ipMatch = output.match(/Address: (\d+\.\d+\.\d+\.\d+)/);
+                    const ip = ipMatch ? ipMatch[1] : null;
+                    resolve({ success: true, ip, output });
+                } else {
+                    reject({ success: false, error, output });
+                }
+            });
+        });
+    },
+
+    // Nginx 설정 생성
+    generateNginxConfig(domain) {
+        return `server {
+    listen 80;
+    server_name ${domain} www.${domain};
+    
+    # 보안 헤더
+    add_header X-Frame-Options DENY;
+    add_header X-Content-Type-Options nosniff;
+    add_header X-XSS-Protection "1; mode=block";
+    add_header Referrer-Policy "strict-origin-when-cross-origin";
+    
+    # 메인 애플리케이션 프록시
+    location / {
+        proxy_pass http://localhost:${CONFIG.port};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+        proxy_read_timeout 86400;
+        proxy_connect_timeout 60;
+        proxy_send_timeout 60;
+    }
+    
+    # 정적 파일 캐싱 최적화
+    location ~* \\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+        proxy_pass http://localhost:${CONFIG.port};
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        add_header Vary "Accept-Encoding";
+    }
+    
+    # API 엔드포인트 최적화
+    location /api/ {
+        proxy_pass http://localhost:${CONFIG.port};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_cache_bypass $http_upgrade;
+    }
+    
+    # 관리자 패널
+    location /admin {
+        proxy_pass http://localhost:${CONFIG.port};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    
+    # 헬스체크
+    location /health {
+        proxy_pass http://localhost:${CONFIG.port};
+        access_log off;
+        proxy_cache_bypass $http_upgrade;
+    }
+    
+    # 로그 설정
+    access_log /var/log/nginx/${domain}_access.log;
+    error_log /var/log/nginx/${domain}_error.log;
+}`;
+    },
+
+    // Nginx 설정 파일 저장
+    async saveNginxConfig(domain, config) {
+        try {
+            const path = `/etc/nginx/sites-available/${domain}`;
+            await fs.promises.writeFile(path, config);
+            return { success: true, path };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    },
+
+    // Nginx 사이트 활성화
+    async enableNginxSite(domain) {
+        const { spawn } = require('child_process');
+        
+        return new Promise((resolve, reject) => {
+            // 심볼릭 링크 생성
+            const ln = spawn('ln', ['-sf', `/etc/nginx/sites-available/${domain}`, `/etc/nginx/sites-enabled/${domain}`]);
+            
+            ln.on('close', (code) => {
+                if (code === 0) {
+                    resolve({ success: true });
+                } else {
+                    reject({ success: false, error: `심볼릭 링크 생성 실패: ${code}` });
+                }
+            });
+        });
+    },
+
+    // Nginx 설정 테스트 및 재시작
+    async reloadNginx() {
+        const { spawn } = require('child_process');
+        
+        return new Promise((resolve, reject) => {
+            // 먼저 설정 테스트
+            const test = spawn('nginx', ['-t']);
+            
+            test.on('close', (code) => {
+                if (code === 0) {
+                    // 설정이 정상이면 재시작
+                    const reload = spawn('systemctl', ['reload', 'nginx']);
+                    
+                    reload.on('close', (reloadCode) => {
+                        if (reloadCode === 0) {
+                            resolve({ success: true, message: 'Nginx 설정 적용 완료' });
+                        } else {
+                            reject({ success: false, error: `Nginx 재시작 실패: ${reloadCode}` });
+                        }
+                    });
+                } else {
+                    reject({ success: false, error: 'Nginx 설정 오류' });
+                }
+            });
+        });
+    }
+};
+
+// 🔄 서버 관리 유틸리티 함수들
+const serverUtils = {
+    // 서버 재시작 (PM2 사용)
+    async restartServer() {
+        const { spawn } = require('child_process');
+        
+        return new Promise((resolve, reject) => {
+            log('🔄 서버 재시작 요청됨', 'INFO');
+            
+            // PM2로 재시작
+            const restart = spawn('pm2', ['restart', 'kimp-arbitrage']);
+            
+            restart.on('close', (code) => {
+                if (code === 0) {
+                    resolve({ success: true, message: '서버 재시작 완료' });
+                } else {
+                    reject({ success: false, error: `PM2 재시작 실패: ${code}` });
+                }
+            });
+            
+            restart.on('error', (error) => {
+                reject({ success: false, error: error.message });
+            });
+        });
+    },
+    
+    // 설정 파일 새로고침
+    async reloadConfig() {
+        try {
+            log('📁 설정 파일 새로고침 중...', 'INFO');
+            
+            // .env 파일 다시 로드
+            const envData = loadEnvFile();
+            
+            // 글로벌 상태 업데이트
+            if (envData.UPBIT_ACCESS_KEY) globalState.apiKeys.upbit.key = envData.UPBIT_ACCESS_KEY;
+            if (envData.UPBIT_SECRET_KEY) globalState.apiKeys.upbit.secret = envData.UPBIT_SECRET_KEY;
+            if (envData.BINANCE_API_KEY) globalState.apiKeys.binance.key = envData.BINANCE_API_KEY;
+            if (envData.BINANCE_SECRET_KEY) globalState.apiKeys.binance.secret = envData.BINANCE_SECRET_KEY;
+            if (envData.DISCORD_WEBHOOK_URL) CONFIG.discordWebhookUrl = envData.DISCORD_WEBHOOK_URL;
+            if (envData.DOMAIN) globalState.domain.current = envData.DOMAIN;
+            
+            log('✅ 설정 파일 새로고침 완료', 'INFO');
+            return { success: true, message: '설정이 성공적으로 다시 로드되었습니다', envData };
+            
+        } catch (error) {
+            log(`❌ 설정 새로고침 실패: ${error.message}`, 'ERROR');
+            return { success: false, error: error.message };
+        }
+    },
+    
+    // GitHub에서 최신 코드 업데이트
+    async updateFromGithub() {
+        const { spawn } = require('child_process');
+        
+        return new Promise((resolve, reject) => {
+            log('📥 GitHub에서 최신 코드 업데이트 중...', 'INFO');
+            
+            const gitPull = spawn('git', ['pull', 'origin', 'main']);
+            let output = '';
+            let error = '';
+            
+            gitPull.stdout.on('data', (data) => {
+                output += data.toString();
+            });
+            
+            gitPull.stderr.on('data', (data) => {
+                error += data.toString();
+            });
+            
+            gitPull.on('close', (code) => {
+                if (code === 0) {
+                    log('✅ GitHub 업데이트 완료', 'INFO');
+                    resolve({ success: true, message: 'GitHub 업데이트 완료', output });
+                } else {
+                    log(`❌ GitHub 업데이트 실패: ${error}`, 'ERROR');
+                    reject({ success: false, error, output });
+                }
+            });
+        });
+    },
+    
+    // 시스템 정보 조회
+    getSystemInfo() {
+        const memoryUsage = process.memoryUsage();
+        const uptime = globalState.startTime ? Date.now() - globalState.startTime : 0;
+        
+        return {
+            memory: {
+                used: Math.round(memoryUsage.heapUsed / 1024 / 1024),
+                total: Math.round(memoryUsage.heapTotal / 1024 / 1024),
+                rss: Math.round(memoryUsage.rss / 1024 / 1024)
+            },
+            uptime: Math.floor(uptime / 1000),
+            stats: globalState.stats,
+            nodeVersion: process.version,
+            platform: process.platform,
+            arch: process.arch,
+            pid: process.pid
+        };
+    },
+    
+    // 로그 클리어
+    clearLogs() {
+        globalState.logBuffer = [];
+        log('🗑️ 로그 버퍼 클리어됨', 'INFO');
+        return { success: true, message: '로그가 클리어되었습니다' };
+    }
+};
+
+// 🌐 도메인 관리 핸들러 함수들
+async function handleDomainRegistration(domain) {
+    try {
+        if (!domain) {
+            return { success: false, error: '도메인을 입력해주세요' };
+        }
+        
+        // 도메인 유효성 검사
+        if (!domainUtils.validateDomain(domain)) {
+            return { success: false, error: '올바른 도메인 형식이 아닙니다' };
+        }
+        
+        log(`🌐 도메인 등록 시작: ${domain}`, 'INFO');
+        
+        // 1. DNS 확인
+        let dnsCheck;
+        try {
+            dnsCheck = await domainUtils.checkDnsRecord(domain);
+            log(`✅ DNS 확인 성공: ${domain} -> ${dnsCheck.ip}`, 'INFO');
+        } catch (error) {
+            log(`⚠️ DNS 확인 실패: ${domain}`, 'WARN');
+            dnsCheck = { success: false, error: 'DNS 확인 실패' };
+        }
+        
+        // 2. Nginx 설정 생성
+        const nginxConfig = domainUtils.generateNginxConfig(domain);
+        const saveResult = await domainUtils.saveNginxConfig(domain, nginxConfig);
+        
+        if (!saveResult.success) {
+            return { 
+                success: false, 
+                error: `Nginx 설정 저장 실패: ${saveResult.error}` 
+            };
+        }
+        
+        // 3. 사이트 활성화
+        try {
+            await domainUtils.enableNginxSite(domain);
+            log(`🔗 Nginx 사이트 활성화 완료: ${domain}`, 'INFO');
+        } catch (error) {
+            log(`❌ Nginx 사이트 활성화 실패: ${error.message}`, 'ERROR');
+            return { 
+                success: false, 
+                error: `사이트 활성화 실패: ${error.message}` 
+            };
+        }
+        
+        // 4. Nginx 재시작
+        try {
+            await domainUtils.reloadNginx();
+            log(`🔄 Nginx 재시작 완료: ${domain}`, 'INFO');
+        } catch (error) {
+            log(`❌ Nginx 재시작 실패: ${error.message}`, 'ERROR');
+            return { 
+                success: false, 
+                error: `Nginx 재시작 실패: ${error.message}` 
+            };
+        }
+        
+        // 5. 상태 업데이트
+        globalState.domain.current = domain;
+        globalState.domain.lastDnsCheck = dnsCheck;
+        globalState.domain.nginxEnabled = true;
+        
+        // 6. .env 파일에 도메인 저장
+        if (updateEnvVariable('DOMAIN', domain)) {
+            log(`📝 .env 파일에 도메인 저장 완료: ${domain}`, 'INFO');
+        }
+        
+        // 7. Discord 알림
+        await sendDiscordSuccessAlert('도메인 등록', {
+            도메인: domain,
+            'DNS 상태': dnsCheck.success ? '✅ 정상' : '⚠️ 대기',
+            '접속 URL': `http://${domain}`
+        });
+        
+        return {
+            success: true,
+            message: `도메인 ${domain} 등록이 완료되었습니다`,
+            domain,
+            dnsCheck,
+            nginxConfigPath: saveResult.path
+        };
+        
+    } catch (error) {
+        log(`❌ 도메인 등록 실패: ${error.message}`, 'ERROR');
+        return { success: false, error: error.message };
+    }
+}
+
+async function handleDnsCheck(domain) {
+    try {
+        if (!domain) {
+            return { success: false, error: '도메인을 입력해주세요' };
+        }
+        
+        const dnsCheck = await domainUtils.checkDnsRecord(domain);
+        globalState.domain.lastDnsCheck = dnsCheck;
+        
+        return {
+            success: true,
+            domain,
+            dns: dnsCheck
+        };
+        
+    } catch (error) {
+        return { 
+            success: false, 
+            domain: domain,
+            dns: { success: false, error: error.message } 
+        };
     }
 }
 
@@ -965,6 +1373,50 @@ const server = http.createServer((req, res) => {
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify(result));
                     
+                // 🌐 도메인 관리 API
+                } else if (url === '/api/register-domain') {
+                    const data = JSON.parse(body);
+                    const { domain } = data;
+                    
+                    const result = await handleDomainRegistration(domain);
+                    
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify(result));
+                    
+                } else if (url === '/api/check-dns-status') {
+                    const data = JSON.parse(body);
+                    const { domain } = data;
+                    
+                    const result = await handleDnsCheck(domain);
+                    
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify(result));
+                    
+                // 🔄 서버 관리 API
+                } else if (url === '/api/restart-server') {
+                    const result = await serverUtils.restartServer();
+                    
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify(result));
+                    
+                } else if (url === '/api/reload-config') {
+                    const result = await serverUtils.reloadConfig();
+                    
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify(result));
+                    
+                } else if (url === '/api/update-from-github') {
+                    const result = await serverUtils.updateFromGithub();
+                    
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify(result));
+                    
+                } else if (url === '/api/clear-logs') {
+                    const result = serverUtils.clearLogs();
+                    
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify(result));
+                    
                 } else {
                     res.writeHead(404, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ error: 'Not Found' }));
@@ -1053,6 +1505,24 @@ const server = http.createServer((req, res) => {
                 configured: !!CONFIG.discordWebhookUrl && CONFIG.discordWebhookUrl.includes('discord.com/api/webhooks/'),
                 lastTest: globalState.lastDiscordTest || null
             }));
+        }
+        
+        // 🌐 도메인 상태 조회 API
+        else if (url === '/api/domain-status' || url === '/api/domain-status/') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                success: true,
+                domain: globalState.domain.current,
+                dnsStatus: globalState.domain.lastDnsCheck,
+                nginxEnabled: globalState.domain.nginxEnabled,
+                sslEnabled: globalState.domain.sslEnabled
+            }));
+        }
+        
+        // 🔄 서버 정보 조회 API
+        else if (url === '/api/system-info' || url === '/api/system-info/') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(serverUtils.getSystemInfo()));
         }
         
         else if (url === '/api/exchange-rate' || url === '/api/exchange-rate/') {
@@ -1399,7 +1869,7 @@ function getAdminHTML() {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>김프 아비트라지 관리자 패널 | Vultr Cloud</title>
+    <title>김프 아비트라지 관리자 패널 v3.0 | 도메인 관리 & 서버 제어</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
@@ -1491,6 +1961,8 @@ function getAdminHTML() {
         <div class="tabs">
             <button class="tab-button active" onclick="showTab('overview')">📊 개요</button>
             <button class="tab-button" onclick="showTab('apikeys')">🔑 API 키</button>
+            <button class="tab-button" onclick="showTab('domain')">🌐 도메인</button>
+            <button class="tab-button" onclick="showTab('server')">🔄 서버</button>
             <button class="tab-button" onclick="showTab('control')">🎮 제어</button>
             <button class="tab-button" onclick="showTab('logs')">📋 로그</button>
         </div>
@@ -1649,6 +2121,147 @@ function getAdminHTML() {
             </div>
         </div>
         
+        <!-- 🌐 도메인 관리 탭 -->
+        <div id="domain" class="tab-content">
+            <div class="grid">
+                <div class="card">
+                    <h2>🌐 도메인 상태</h2>
+                    <div class="status-item">
+                        <span class="status-label">현재 도메인</span>
+                        <span class="status-value" id="current-domain">설정되지 않음</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">DNS 상태</span>
+                        <span class="status-value" id="dns-status">확인 필요</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">Nginx 상태</span>
+                        <span class="status-value" id="nginx-status">비활성</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">SSL 상태</span>
+                        <span class="status-value" id="ssl-status">비활성</span>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <h2>➕ 도메인 등록</h2>
+                    <div class="form-group">
+                        <label>새 도메인 등록</label>
+                        <input type="text" id="domain-input" placeholder="예: vsun410.pe.kr" />
+                        <div style="color: #666; font-size: 13px; margin-top: 5px;">
+                            DNS A 레코드를 먼저 설정하세요 (IP: ${CONFIG.currentServerIp})
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <button class="btn btn-success" onclick="registerDomain()">🌐 도메인 등록</button>
+                        <button class="btn" onclick="checkDnsStatus()">🔍 DNS 확인</button>
+                    </div>
+                    <div id="domain-alert"></div>
+                </div>
+                
+                <div class="card">
+                    <h2>📋 설정 가이드</h2>
+                    <div style="color: #666; line-height: 1.6;">
+                        <h3 style="color: #667eea; margin-bottom: 10px;">1단계: DNS 설정</h3>
+                        <p>도메인 관리 페이지에서 A 레코드 추가:</p>
+                        <div style="background: #f8f9fa; padding: 10px; border-radius: 8px; margin: 10px 0; font-family: monospace;">
+레코드 타입: A<br>
+호스트명: @<br>
+값: ${CONFIG.currentServerIp}<br>
+TTL: 300
+                        </div>
+                        
+                        <h3 style="color: #667eea; margin: 20px 0 10px 0;">2단계: 도메인 등록</h3>
+                        <p>위 입력창에 도메인을 입력하고 "도메인 등록" 버튼 클릭</p>
+                        
+                        <h3 style="color: #667eea; margin: 20px 0 10px 0;">3단계: 확인</h3>
+                        <p>도메인이 정상적으로 연결되는지 확인</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 🔄 서버 관리 탭 -->
+        <div id="server" class="tab-content">
+            <div class="grid">
+                <div class="card">
+                    <h2>💻 시스템 정보</h2>
+                    <div class="status-item">
+                        <span class="status-label">메모리 사용량</span>
+                        <span class="status-value" id="memory-usage">로딩중...</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">서버 가동시간</span>
+                        <span class="status-value" id="server-uptime">로딩중...</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">Node.js 버전</span>
+                        <span class="status-value" id="node-version">로딩중...</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">프로세스 ID</span>
+                        <span class="status-value" id="process-id">로딩중...</span>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <h2>🔄 서버 제어</h2>
+                    <div class="form-group">
+                        <button class="btn btn-warning" onclick="restartServer()" style="width: 100%; margin-bottom: 10px;">
+                            🔄 서버 재시작
+                        </button>
+                        <div style="color: #666; font-size: 13px; margin-bottom: 15px;">
+                            PM2를 사용하여 서버를 안전하게 재시작합니다
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <button class="btn" onclick="reloadConfig()" style="width: 100%; margin-bottom: 10px;">
+                            📁 설정 새로고침
+                        </button>
+                        <div style="color: #666; font-size: 13px; margin-bottom: 15px;">
+                            .env 파일의 변경사항을 즉시 적용합니다
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <button class="btn" onclick="clearServerLogs()" style="width: 100%; margin-bottom: 10px;">
+                            🗑️ 로그 클리어
+                        </button>
+                        <div style="color: #666; font-size: 13px;">
+                            메모리에 저장된 로그를 정리합니다
+                        </div>
+                    </div>
+                    
+                    <div id="server-alert"></div>
+                </div>
+                
+                <div class="card">
+                    <h2>📥 GitHub 업데이트</h2>
+                    <p style="color: #666; margin-bottom: 15px;">
+                        GitHub에서 최신 코드를 가져와 서버를 업데이트합니다
+                    </p>
+                    
+                    <div class="form-group">
+                        <button class="btn btn-primary" onclick="updateFromGithub()" style="width: 100%;">
+                            📥 GitHub에서 업데이트
+                        </button>
+                    </div>
+                    
+                    <div id="github-alert"></div>
+                    
+                    <div style="background: #e7f3ff; padding: 15px; border-radius: 8px; margin-top: 15px; color: #666; font-size: 14px;">
+                        <strong>📋 업데이트 순서:</strong><br>
+                        1. GitHub에서 최신 코드 pull<br>
+                        2. 변경사항 확인<br>
+                        3. 필요시 서버 재시작<br>
+                        4. 기능 테스트
+                    </div>
+                </div>
+            </div>
+        </div>
+        
         <!-- 제어 탭 -->
         <div id="control" class="tab-content">
             <div class="grid">
@@ -1710,8 +2323,13 @@ function getAdminHTML() {
             document.getElementById(tabName).classList.add('active');
             event.target.classList.add('active');
             
+            // 탭별 데이터 로드
             if (tabName === 'logs') {
                 loadLogs();
+            } else if (tabName === 'domain') {
+                loadDomainStatus();
+            } else if (tabName === 'server') {
+                loadSystemInfo();
             }
         }
         
@@ -2034,11 +2652,13 @@ function getAdminHTML() {
         
         // 초기화
         document.addEventListener('DOMContentLoaded', () => {
-            addAdminLog('Vultr 관리자 패널 로드 완료');
+            addAdminLog('Vultr 관리자 패널 v3.0 로드 완료 - 도메인 관리 & 서버 제어');
             refreshData();
             setupAutoRefresh();
             loadApiKeyStatus();
             loadDiscordWebhookStatus();
+            loadDomainStatus();
+            loadSystemInfo();
         });
         
         // Discord 웹훅 관리 함수들
@@ -2143,6 +2763,335 @@ function getAdminHTML() {
             const alertClass = type === 'success' ? 'alert-success' : type === 'error' ? 'alert-danger' : 'alert-info';
             alertDiv.innerHTML = \`<div class="alert \${alertClass}" style="margin-top: 10px; padding: 10px; border-radius: 5px; font-size: 14px;">\${message}</div>\`;
             setTimeout(() => { alertDiv.innerHTML = ''; }, 4000);
+        }
+        
+        // 🌐 도메인 관리 함수들
+        async function registerDomain() {
+            try {
+                const domainInput = document.getElementById('domain-input');
+                const domain = domainInput.value.trim();
+                
+                if (!domain) {
+                    showDomainAlert('도메인을 입력해주세요', 'error');
+                    return;
+                }
+                
+                // 도메인 유효성 검사 (클라이언트)
+                const domainRegex = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+                if (!domainRegex.test(domain)) {
+                    showDomainAlert('올바른 도메인 형식을 입력해주세요', 'error');
+                    return;
+                }
+                
+                showDomainAlert('도메인 등록 중... 잠시 기다려주세요 (30초-1분)', 'info');
+                
+                const response = await fetch('/api/register-domain', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ domain })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showDomainAlert(\`✅ 도메인 등록 완료: \${domain}\`, 'success');
+                    addAdminLog(\`도메인 등록 완료: \${domain}\`);
+                    
+                    // 입력 필드 초기화
+                    domainInput.value = '';
+                    
+                    // 상태 새로고침
+                    loadDomainStatus();
+                    
+                    // 새 창에서 도메인 테스트
+                    setTimeout(() => {
+                        const testUrl = \`http://\${domain}\`;
+                        showDomainAlert(\`🔍 새 창에서 도메인 테스트: \${testUrl}\`, 'info');
+                        window.open(testUrl, '_blank');
+                    }, 3000);
+                    
+                } else {
+                    showDomainAlert(\`❌ 도메인 등록 실패: \${result.error}\`, 'error');
+                    addAdminLog(\`도메인 등록 실패: \${result.error}\`);
+                }
+                
+            } catch (error) {
+                showDomainAlert(\`도메인 등록 중 오류 발생: \${error.message}\`, 'error');
+            }
+        }
+        
+        async function checkDnsStatus() {
+            try {
+                const domainInput = document.getElementById('domain-input');
+                const domain = domainInput.value.trim();
+                
+                if (!domain) {
+                    showDomainAlert('도메인을 입력해주세요', 'error');
+                    return;
+                }
+                
+                showDomainAlert('DNS 상태 확인 중...', 'info');
+                
+                const response = await fetch('/api/check-dns-status', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ domain })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success && result.dns.success) {
+                    const ip = result.dns.ip;
+                    const currentIp = '${CONFIG.currentServerIp}';
+                    
+                    if (ip === currentIp) {
+                        showDomainAlert(\`✅ DNS 설정 정상: \${domain} -> \${ip}\`, 'success');
+                        document.getElementById('dns-status').textContent = '✅ 정상';
+                        document.getElementById('dns-status').className = 'status-value status-success';
+                    } else {
+                        showDomainAlert(\`⚠️ DNS 설정 불일치: \${domain} -> \${ip} (예상: \${currentIp})\`, 'warning');
+                        document.getElementById('dns-status').textContent = '⚠️ 불일치';
+                        document.getElementById('dns-status').className = 'status-value status-warning';
+                    }
+                } else {
+                    showDomainAlert(\`❌ DNS 확인 실패: \${result.dns ? result.dns.error : '알 수 없는 오류'}\`, 'error');
+                    document.getElementById('dns-status').textContent = '❌ 실패';
+                    document.getElementById('dns-status').className = 'status-value status-danger';
+                }
+                
+            } catch (error) {
+                showDomainAlert(\`DNS 확인 중 오류 발생: \${error.message}\`, 'error');
+            }
+        }
+        
+        async function loadDomainStatus() {
+            try {
+                const response = await fetch('/api/domain-status');
+                const status = await response.json();
+                
+                if (status.success) {
+                    // 현재 도메인 표시
+                    if (status.domain) {
+                        document.getElementById('current-domain').textContent = status.domain;
+                        document.getElementById('current-domain').className = 'status-value status-success';
+                    } else {
+                        document.getElementById('current-domain').textContent = '설정되지 않음';
+                        document.getElementById('current-domain').className = 'status-value';
+                    }
+                    
+                    // DNS 상태 표시
+                    if (status.dnsStatus && status.dnsStatus.success) {
+                        document.getElementById('dns-status').textContent = '✅ 정상';
+                        document.getElementById('dns-status').className = 'status-value status-success';
+                    } else {
+                        document.getElementById('dns-status').textContent = '확인 필요';
+                        document.getElementById('dns-status').className = 'status-value';
+                    }
+                    
+                    // Nginx 상태 표시
+                    if (status.nginxEnabled) {
+                        document.getElementById('nginx-status').textContent = '✅ 활성';
+                        document.getElementById('nginx-status').className = 'status-value status-success';
+                    } else {
+                        document.getElementById('nginx-status').textContent = '비활성';
+                        document.getElementById('nginx-status').className = 'status-value';
+                    }
+                    
+                    // SSL 상태 표시
+                    if (status.sslEnabled) {
+                        document.getElementById('ssl-status').textContent = '✅ 활성';
+                        document.getElementById('ssl-status').className = 'status-value status-success';
+                    } else {
+                        document.getElementById('ssl-status').textContent = '비활성';
+                        document.getElementById('ssl-status').className = 'status-value';
+                    }
+                }
+                
+            } catch (error) {
+                console.error('도메인 상태 로드 실패:', error);
+            }
+        }
+        
+        function showDomainAlert(message, type) {
+            const alertDiv = document.getElementById('domain-alert');
+            const alertClass = type === 'success' ? 'alert-success' : 
+                              type === 'error' ? 'alert-danger' : 
+                              type === 'warning' ? 'alert-warning' : 'alert-info';
+            alertDiv.innerHTML = \`<div class="alert \${alertClass}" style="margin-top: 10px; padding: 10px; border-radius: 5px; font-size: 14px;">\${message}</div>\`;
+            setTimeout(() => { alertDiv.innerHTML = ''; }, type === 'info' && message.includes('등록 중') ? 60000 : 8000);
+        }
+        
+        // 🔄 서버 관리 함수들
+        async function restartServer() {
+            if (!confirm('정말로 서버를 재시작하시겠습니까? 잠시 동안 서비스가 중단됩니다.')) {
+                return;
+            }
+            
+            try {
+                showServerAlert('서버 재시작 중... 잠시 기다려주세요', 'info');
+                addAdminLog('서버 재시작 요청');
+                
+                const response = await fetch('/api/restart-server', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showServerAlert('✅ 서버 재시작 완료', 'success');
+                    addAdminLog('서버 재시작 성공');
+                } else {
+                    showServerAlert(\`❌ 서버 재시작 실패: \${result.error}\`, 'error');
+                    addAdminLog(\`서버 재시작 실패: \${result.error}\`);
+                }
+                
+            } catch (error) {
+                showServerAlert(\`서버 재시작 중 오류 발생: \${error.message}\`, 'error');
+                addAdminLog(\`서버 재시작 오류: \${error.message}\`);
+            }
+        }
+        
+        async function reloadConfig() {
+            try {
+                showServerAlert('설정 파일 새로고침 중...', 'info');
+                addAdminLog('설정 새로고침 요청');
+                
+                const response = await fetch('/api/reload-config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showServerAlert('✅ 설정 파일 새로고침 완료', 'success');
+                    addAdminLog('설정 새로고침 성공');
+                    
+                    // 상태들 다시 로드
+                    refreshData();
+                    loadApiKeyStatus();
+                    loadDomainStatus();
+                    
+                } else {
+                    showServerAlert(\`❌ 설정 새로고침 실패: \${result.error}\`, 'error');
+                    addAdminLog(\`설정 새로고침 실패: \${result.error}\`);
+                }
+                
+            } catch (error) {
+                showServerAlert(\`설정 새로고침 중 오류 발생: \${error.message}\`, 'error');
+                addAdminLog(\`설정 새로고침 오류: \${error.message}\`);
+            }
+        }
+        
+        async function clearServerLogs() {
+            if (!confirm('정말로 서버 로그를 클리어하시겠습니까?')) {
+                return;
+            }
+            
+            try {
+                showServerAlert('로그 클리어 중...', 'info');
+                
+                const response = await fetch('/api/clear-logs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showServerAlert('✅ 로그 클리어 완료', 'success');
+                    addAdminLog('서버 로그 클리어 완료');
+                } else {
+                    showServerAlert(\`❌ 로그 클리어 실패: \${result.error}\`, 'error');
+                }
+                
+            } catch (error) {
+                showServerAlert(\`로그 클리어 중 오류 발생: \${error.message}\`, 'error');
+            }
+        }
+        
+        async function updateFromGithub() {
+            if (!confirm('GitHub에서 최신 코드를 업데이트하시겠습니까? 서버 재시작이 필요할 수 있습니다.')) {
+                return;
+            }
+            
+            try {
+                showGithubAlert('GitHub에서 최신 코드 업데이트 중... 잠시 기다려주세요', 'info');
+                addAdminLog('GitHub 업데이트 요청');
+                
+                const response = await fetch('/api/update-from-github', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showGithubAlert('✅ GitHub 업데이트 완료', 'success');
+                    addAdminLog('GitHub 업데이트 성공');
+                    
+                    // 업데이트 후 서버 재시작 권장 알림
+                    setTimeout(() => {
+                        if (confirm('업데이트가 완료되었습니다. 변경사항 적용을 위해 서버를 재시작하시겠습니까?')) {
+                            restartServer();
+                        }
+                    }, 2000);
+                    
+                } else {
+                    showGithubAlert(\`❌ GitHub 업데이트 실패: \${result.error}\`, 'error');
+                    addAdminLog(\`GitHub 업데이트 실패: \${result.error}\`);
+                }
+                
+            } catch (error) {
+                showGithubAlert(\`GitHub 업데이트 중 오류 발생: \${error.message}\`, 'error');
+                addAdminLog(\`GitHub 업데이트 오류: \${error.message}\`);
+            }
+        }
+        
+        async function loadSystemInfo() {
+            try {
+                const response = await fetch('/api/system-info');
+                const info = await response.json();
+                
+                // 시스템 정보 업데이트
+                document.getElementById('memory-usage').textContent = \`\${info.memory.used}MB / \${info.memory.total}MB\`;
+                document.getElementById('server-uptime').textContent = formatUptime(info.uptime);
+                document.getElementById('node-version').textContent = info.nodeVersion;
+                document.getElementById('process-id').textContent = info.pid;
+                
+                // 메모리 사용량에 따른 색상 변경
+                const memoryUsage = (info.memory.used / info.memory.total) * 100;
+                const memoryElement = document.getElementById('memory-usage');
+                if (memoryUsage > 80) {
+                    memoryElement.className = 'status-value status-danger';
+                } else if (memoryUsage > 60) {
+                    memoryElement.className = 'status-value status-warning';
+                } else {
+                    memoryElement.className = 'status-value status-success';
+                }
+                
+            } catch (error) {
+                console.error('시스템 정보 로드 실패:', error);
+            }
+        }
+        
+        function showServerAlert(message, type) {
+            const alertDiv = document.getElementById('server-alert');
+            const alertClass = type === 'success' ? 'alert-success' : 
+                              type === 'error' ? 'alert-danger' : 
+                              type === 'warning' ? 'alert-warning' : 'alert-info';
+            alertDiv.innerHTML = \`<div class="alert \${alertClass}" style="margin-top: 10px; padding: 10px; border-radius: 5px; font-size: 14px;">\${message}</div>\`;
+            setTimeout(() => { alertDiv.innerHTML = ''; }, type === 'info' ? 10000 : 6000);
+        }
+        
+        function showGithubAlert(message, type) {
+            const alertDiv = document.getElementById('github-alert');
+            const alertClass = type === 'success' ? 'alert-success' : 
+                              type === 'error' ? 'alert-danger' : 
+                              type === 'warning' ? 'alert-warning' : 'alert-info';
+            alertDiv.innerHTML = \`<div class="alert \${alertClass}" style="margin-top: 10px; padding: 10px; border-radius: 5px; font-size: 14px;">\${message}</div>\`;
+            setTimeout(() => { alertDiv.innerHTML = ''; }, type === 'info' ? 15000 : 8000);
         }
     </script>
 </body>
