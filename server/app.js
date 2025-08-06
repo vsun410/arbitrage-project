@@ -935,21 +935,21 @@ function generateAdminPanel() {
                 if (data.success) {
                     // 김프 현황 업데이트
                     if (data.BTC) {
-                        document.getElementById('btc-kimp').textContent = `+${data.BTC.premium.toFixed(2)}%`;
+                        document.getElementById('btc-kimp').textContent = '+' + data.BTC.premium.toFixed(2) + '%';
                         document.getElementById('btc-kimp').className = 'status-value ' + getKimpStatusClass(data.BTC.premium);
                     }
                     if (data.ETH) {
-                        document.getElementById('eth-kimp').textContent = `+${data.ETH.premium.toFixed(2)}%`;
+                        document.getElementById('eth-kimp').textContent = '+' + data.ETH.premium.toFixed(2) + '%';
                         document.getElementById('eth-kimp').className = 'status-value ' + getKimpStatusClass(data.ETH.premium);
                     }
                     if (data.XRP) {
-                        document.getElementById('xrp-kimp').textContent = `+${data.XRP.premium.toFixed(2)}%`;
+                        document.getElementById('xrp-kimp').textContent = '+' + data.XRP.premium.toFixed(2) + '%';
                         document.getElementById('xrp-kimp').className = 'status-value ' + getKimpStatusClass(data.XRP.premium);
                     }
                     
                     // 환율 업데이트
                     if (data.exchangeRate) {
-                        document.getElementById('exchange-rate').textContent = `${data.exchangeRate.toFixed(2)} KRW/USD`;
+                        document.getElementById('exchange-rate').textContent = data.exchangeRate.toFixed(2) + ' KRW/USD';
                     }
                     
                     // 마지막 업데이트 시간
@@ -980,7 +980,7 @@ function generateAdminPanel() {
                     
                     const memUsage = data.stats?.memoryUsage;
                     if (memUsage) {
-                        document.getElementById('memory-usage').textContent = `${(memUsage.used / 1024 / 1024).toFixed(1)}MB`;
+                        document.getElementById('memory-usage').textContent = (memUsage.used / 1024 / 1024).toFixed(1) + 'MB';
                     }
                 }
             } catch (error) {
@@ -1014,10 +1014,10 @@ function generateAdminPanel() {
                     document.getElementById('upbit-access-key').value = '';
                     document.getElementById('upbit-secret-key').value = '';
                 } else {
-                    showAlert('upbit-status', `❌ 저장 실패: ${result.error}`, 'error');
+                    showAlert('upbit-status', '❌ 저장 실패: ' + result.error, 'error');
                 }
             } catch (error) {
-                showAlert('upbit-status', `오류 발생: ${error.message}`, 'error');
+                showAlert('upbit-status', '오류 발생: ' + error.message, 'error');
             }
         }
         
@@ -1046,10 +1046,10 @@ function generateAdminPanel() {
                     document.getElementById('binance-api-key').value = '';
                     document.getElementById('binance-secret-key').value = '';
                 } else {
-                    showAlert('binance-status', `❌ 저장 실패: ${result.error}`, 'error');
+                    showAlert('binance-status', '❌ 저장 실패: ' + result.error, 'error');
                 }
             } catch (error) {
-                showAlert('binance-status', `오류 발생: ${error.message}`, 'error');
+                showAlert('binance-status', '오류 발생: ' + error.message, 'error');
             }
         }
         
@@ -1065,12 +1065,12 @@ function generateAdminPanel() {
                 
                 const result = await response.json();
                 if (result.success) {
-                    showAlert('upbit-status', `✅ 업비트 연결 성공! 계정: ${result.data?.account || '확인됨'}`, 'success');
+                    showAlert('upbit-status', '✅ 업비트 연결 성공! 계정: ' + (result.data?.account || '확인됨'), 'success');
                 } else {
-                    showAlert('upbit-status', `❌ 업비트 연결 실패: ${result.error}`, 'error');
+                    showAlert('upbit-status', '❌ 업비트 연결 실패: ' + result.error, 'error');
                 }
             } catch (error) {
-                showAlert('upbit-status', `연결 테스트 중 오류 발생: ${error.message}`, 'error');
+                showAlert('upbit-status', '연결 테스트 중 오류 발생: ' + error.message, 'error');
             }
         }
         
@@ -1085,12 +1085,12 @@ function generateAdminPanel() {
                 
                 const result = await response.json();
                 if (result.success) {
-                    showAlert('binance-status', `✅ 바이낸스 연결 성공! 계정: ${result.data?.account || '확인됨'}`, 'success');
+                    showAlert('binance-status', '✅ 바이낸스 연결 성공! 계정: ' + (result.data?.account || '확인됨'), 'success');
                 } else {
-                    showAlert('binance-status', `❌ 바이낸스 연결 실패: ${result.error}`, 'error');
+                    showAlert('binance-status', '❌ 바이낸스 연결 실패: ' + result.error, 'error');
                 }
             } catch (error) {
-                showAlert('binance-status', `연결 테스트 중 오류 발생: ${error.message}`, 'error');
+                showAlert('binance-status', '연결 테스트 중 오류 발생: ' + error.message, 'error');
             }
         }
         
@@ -1117,7 +1117,7 @@ function generateAdminPanel() {
                     }, 2000);
                 }
             } catch (error) {
-                showAlert('server-status', `서버 재시작 실패: ${error.message}`, 'error');
+                showAlert('server-status', '서버 재시작 실패: ' + error.message, 'error');
             }
         }
         
@@ -1139,7 +1139,7 @@ function generateAdminPanel() {
                     loadSystemStatus();
                 }
             } catch (error) {
-                showAlert('server-status', `설정 새로고침 실패: ${error.message}`, 'error');
+                showAlert('server-status', '설정 새로고침 실패: ' + error.message, 'error');
             }
         }
         
@@ -1165,14 +1165,14 @@ function generateAdminPanel() {
                     }, 3000);
                 }
             } catch (error) {
-                showAlert('server-status', `GitHub 업데이트 실패: ${error.message}`, 'error');
+                showAlert('server-status', 'GitHub 업데이트 실패: ' + error.message, 'error');
             }
         }
         
         // 로그 관리 함수들
         function addAdminLog(message) {
             const timestamp = new Date().toLocaleString('ko-KR');
-            const logEntry = `[${timestamp}] ${message}`;
+            const logEntry = '[' + timestamp + '] ' + message;
             adminLogs.push(logEntry);
             
             // 최대 100개 로그만 유지
@@ -1187,7 +1187,7 @@ function generateAdminPanel() {
             const logContainer = document.getElementById('admin-logs');
             if (logContainer && adminLogs.length > 0) {
                 logContainer.innerHTML = adminLogs.map(log => 
-                    `<div class="log-entry">${log}</div>`
+                    '<div class="log-entry">' + log + '</div>'
                 ).join('');
                 logContainer.scrollTop = logContainer.scrollHeight;
             }
@@ -1214,7 +1214,7 @@ function generateAdminPanel() {
                              type === 'error' ? 'alert-error' : 
                              type === 'warning' ? 'alert-warning' : 'alert-info';
             
-            element.innerHTML = `<div class="alert ${alertClass}" style="margin-top: 15px;">${message}</div>`;
+            element.innerHTML = '<div class="alert ' + alertClass + '" style="margin-top: 15px;">' + message + '</div>';
             setTimeout(() => { element.innerHTML = ''; }, 8000);
         }
         
