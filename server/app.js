@@ -962,6 +962,12 @@ const server = http.createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     
+    // res.json 메서드 추가
+    res.json = function(data) {
+        this.writeHead(200, { 'Content-Type': 'application/json' });
+        this.end(JSON.stringify(data));
+    };
+    
     if (req.method === 'OPTIONS') {
         res.writeHead(200);
         res.end();
