@@ -898,26 +898,6 @@ async function executeSimultaneousOrders(upbit, binance, symbol, entrySignal, or
     }
 }
 
-        // 거래 통계 업데이트
-        globalState.trading.stats.totalTrades++;
-        
-        // Discord 알림
-        await sendDiscordNotification({
-            title: `${CONFIG.trading.dryRun ? '모의' : '실제'}거래 신호`,
-            description: `**${symbol}** ${signal}`,
-            color: CONFIG.trading.dryRun ? 0x0099ff : 0xff9900,
-            fields: [
-                { name: '김프', value: `${(marketData.kimp * 100).toFixed(2)}%`, inline: true },
-                { name: '포지션 크기', value: `${CONFIG.trading.positionSize.toLocaleString()}원`, inline: true },
-                { name: '모드', value: CONFIG.trading.dryRun ? '모의거래' : '실거래', inline: true }
-            ]
-        });
-
-    } catch (error) {
-        log(`거래 실행 실패: ${error.message}`, 'ERROR');
-    }
-}
-
 async function executeSimulatedTrade(tradeInfo) {
     const { symbol, signal, marketData, positionSize } = tradeInfo;
     
@@ -1080,6 +1060,153 @@ const apiHandlers = {
                 Math.floor((Date.now() - new Date(globalState.lastDataUpdate).getTime()) / 1000) : null
         };
         res.json(data);
+    },
+
+    // ============================================================================
+    // 🆕 v4.1 새로운 기능 추가 (기존 코드 수정 없음)
+    // ============================================================================
+    
+    // 긴급 정지 기능
+    async emergencyStop(req, res) {
+        try {
+            // 모든 거래 즉시 중단
+            CONFIG.trading.enabled = false;
+            globalState.trading.enabled = false;
+            
+            // 모든 포지션 강제 청산 플래그 설정
+            globalState.trading.emergencyStop = true;
+            
+            log('🚨 긴급 정지 활성화 - 모든 거래 중단', 'WARN');
+            
+            // Discord 긴급 알림
+            sendDiscordNotification({
+                title: '🚨 긴급 정지 활성화',
+                description: '**모든 거래가 즉시 중단되었습니다**',
+                color: 0xff0000,
+                fields: [
+                    { name: '정지 시각', value: new Date().toLocaleString('ko-KR'), inline: true },
+                    { name: '활성 포지션', value: `${Object.values(globalState.trading.positions).flat().length}개`, inline: true },
+                    { name: '상태', value: '긴급 정지', inline: true }
+                ]
+            });
+            
+            res.json({
+                success: true,
+                message: '긴급 정지가 활성화되었습니다.',
+                timestamp: new Date().toISOString()
+            });
+        } catch (error) {
+            res.json({ success: false, error: error.message });
+        }
+    },
+
+    // 거래 내역 상세 조회
+    async getTradeDetails(req, res) {
+        try {
+            const { limit = 50, offset = 0, symbol = null } = req.query;
+            
+            let trades = [...globalState.trading.tradeHistory];
+            
+            // 심볼 필터
+            if (symbol && symbol !== 'all') {
+                trades = trades.filter(trade => trade.symbol === symbol);
+            }
+            
+            // 최신순 정렬
+            trades.sort((a, b) => new Date(b.exitTime) - new Date(a.exitTime));
+            
+            // 페이지네이션
+            const total = trades.length;
+            const paginatedTrades = trades.slice(offset, offset + parseInt(limit));
+            
+            // 상세 정보 추가
+            const detailedTrades = paginatedTrades.map(trade => ({
+                ...trade,
+                profitFormatted: `${trade.netProfitPct.toFixed(2)}%`,
+                profitKrwFormatted: `${(trade.profitKrw/10000).toFixed(1)}만원`,
+                holdingTimeFormatted: `${Math.floor(trade.holdingTime/60)}분 ${trade.holdingTime%60}초`,
+                entryTimeFormatted: new Date(trade.entryTime).toLocaleString('ko-KR'),
+                exitTimeFormatted: new Date(trade.exitTime).toLocaleString('ko-KR')
+            }));
+            
+            res.json({
+                success: true,
+                trades: detailedTrades,
+                pagination: {
+                    total,
+                    limit: parseInt(limit),
+                    offset: parseInt(offset),
+                    hasMore: offset + parseInt(limit) < total
+                },
+                summary: {
+                    totalTrades: total,
+                    profitableTrades: trades.filter(t => t.profitKrw > 0).length,
+                    totalProfitKrw: trades.reduce((sum, t) => sum + t.profitKrw, 0),
+                    avgProfitPct: trades.length > 0 ? trades.reduce((sum, t) => sum + t.netProfitPct, 0) / trades.length : 0
+                }
+            });
+        } catch (error) {
+            res.json({ success: false, error: error.message });
+        }
+    },
+
+    // 거래 금액 조절 (새로운 설정)
+    async setTradingAmount(req, res) {
+        try {
+            const { totalCapital, btcAllocation, ethAllocation, xrpAllocation } = req.body;
+            
+            const capital = parseInt(totalCapital);
+            const btc = parseFloat(btcAllocation);
+            const eth = parseFloat(ethAllocation);
+            const xrp = parseFloat(xrpAllocation);
+            
+            // 유효성 검증
+            if (isNaN(capital) || capital < 1000000 || capital > 100000000) {
+                return res.json({
+                    success: false,
+                    error: '총 자본은 100만원에서 1억원 사이여야 합니다.'
+                });
+            }
+            
+            if (Math.abs((btc + eth + xrp) - 1.0) > 0.01) {
+                return res.json({
+                    success: false,
+                    error: '종목별 배분의 합은 100%여야 합니다.'
+                });
+            }
+            
+            // 새로운 설정 적용
+            CONFIG.trading.initialCapital = capital;
+            CONFIG.trading.allocations = {
+                BTC: btc,
+                ETH: eth,
+                XRP: xrp
+            };
+            
+            // 환경 변수 업데이트
+            updateEnvVariable('INITIAL_CAPITAL', capital.toString());
+            updateEnvVariable('BTC_ALLOCATION', btc.toString());
+            updateEnvVariable('ETH_ALLOCATION', eth.toString());
+            updateEnvVariable('XRP_ALLOCATION', xrp.toString());
+            
+            log(`거래 금액 설정 변경: 총 자본 ${(capital/10000).toFixed(0)}만원, BTC:${(btc*100).toFixed(1)}% ETH:${(eth*100).toFixed(1)}% XRP:${(xrp*100).toFixed(1)}%`, 'INFO');
+            
+            res.json({
+                success: true,
+                settings: {
+                    totalCapital: capital,
+                    allocations: CONFIG.trading.allocations,
+                    estimatedAmounts: {
+                        BTC: Math.floor(capital * btc / 10000),
+                        ETH: Math.floor(capital * eth / 10000),
+                        XRP: Math.floor(capital * xrp / 10000)
+                    }
+                },
+                message: '거래 금액 설정이 업데이트되었습니다.'
+            });
+        } catch (error) {
+            res.json({ success: false, error: error.message });
+        }
     },
 
     async getSystemStatus(req, res) {
@@ -1375,6 +1502,104 @@ function generateAdminPanel() {
                         <button class="btn btn-secondary" onclick="loadDetailedStats()">상세 통계보기</button>
                     </div>
                     <div id="system-info"></div>
+                </div>
+
+                <!-- ============================================================================ -->
+                <!-- 🆕 v4.1 새로운 기능 카드들 (기존 코드 수정 없음) -->
+                <!-- ============================================================================ -->
+                
+                <!-- 긴급 정지 카드 -->
+                <div class="card">
+                    <h2>🚨 긴급 정지</h2>
+                    <p style="color: #dc3545; margin-bottom: 15px; font-weight: 500;">
+                        모든 거래를 즉시 중단하고 포지션을 강제 청산합니다.
+                    </p>
+                    <button class="btn" onclick="emergencyStop()" 
+                            style="background: #dc3545; color: white; font-size: 1.1em; padding: 15px 30px; width: 100%;">
+                        🚨 긴급 정지 실행
+                    </button>
+                    <div id="emergency-alert"></div>
+                </div>
+
+                <!-- 거래 금액 조절 카드 -->
+                <div class="card">
+                    <h2>💼 거래 금액 조절</h2>
+                    <div class="form-group">
+                        <label class="input-label">총 투자 자본 (원)</label>
+                        <input type="number" id="total-capital-input" class="input-field" 
+                               placeholder="40000000" min="1000000" max="100000000">
+                        <div class="input-help">최소 100만원, 최대 1억원 (기본값: 4천만원)</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="input-label">종목별 배분 (%)</label>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px;">
+                            <div>
+                                <label style="font-size: 0.9em; color: #666;">BTC</label>
+                                <input type="number" id="btc-allocation-input" class="input-field" 
+                                       placeholder="40" min="0" max="100" step="1">
+                            </div>
+                            <div>
+                                <label style="font-size: 0.9em; color: #666;">ETH</label>
+                                <input type="number" id="eth-allocation-input" class="input-field" 
+                                       placeholder="35" min="0" max="100" step="1">
+                            </div>
+                            <div>
+                                <label style="font-size: 0.9em; color: #666;">XRP</label>
+                                <input type="number" id="xrp-allocation-input" class="input-field" 
+                                       placeholder="25" min="0" max="100" step="1">
+                            </div>
+                        </div>
+                        <div class="input-help">합계는 100%가 되어야 합니다 (기본: BTC 40%, ETH 35%, XRP 25%)</div>
+                    </div>
+                    
+                    <div class="status-item" id="allocation-preview" style="margin: 15px 0; display: none;">
+                        <span class="status-label">예상 투입 금액</span>
+                        <div id="allocation-amounts" style="font-size: 0.9em; margin-top: 5px;"></div>
+                    </div>
+                    
+                    <button class="btn btn-success" onclick="setTradingAmount()">거래 금액 설정 저장</button>
+                    <div id="trading-amount-alert"></div>
+                </div>
+
+                <!-- 거래 내역 상세보기 카드 -->
+                <div class="card">
+                    <h2>📋 거래 내역 상세보기</h2>
+                    <div class="flex-row" style="margin-bottom: 15px;">
+                        <select id="trade-symbol-filter" class="input-field" style="flex: 1; margin-right: 10px;">
+                            <option value="all">전체 종목</option>
+                            <option value="BTC">BTC</option>
+                            <option value="ETH">ETH</option>
+                            <option value="XRP">XRP</option>
+                        </select>
+                        <button class="btn btn-primary" onclick="loadTradeDetails()">조회</button>
+                    </div>
+                    
+                    <div id="trade-summary" style="display: none;">
+                        <div class="status-grid">
+                            <div class="status-item">
+                                <span class="status-label">총 거래수</span>
+                                <span class="status-value" id="total-trades-count">-</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="status-label">수익 거래</span>
+                                <span class="status-value" id="profitable-trades-count">-</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="status-label">총 수익</span>
+                                <span class="status-value" id="total-profit-amount">-</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="status-label">평균 수익률</span>
+                                <span class="status-value" id="avg-profit-rate">-</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div id="trade-details-list" style="max-height: 300px; overflow-y: auto; margin-top: 15px;">
+                        <!-- 거래 내역이 여기에 동적으로 추가됩니다 -->
+                    </div>
+                    <div id="trade-details-alert"></div>
                 </div>
             </div>
         </div>
@@ -2079,6 +2304,181 @@ function generateAdminPanel() {
             const data = await response.json();
             document.getElementById('system-info').innerHTML = \`<pre>\${JSON.stringify(data, null, 2)}</pre>\`;
         }
+
+        // ============================================================================
+        // 🆕 v4.1 새로운 JavaScript 함수들 (기존 코드 수정 없음)
+        // ============================================================================
+        
+        // 긴급 정지 함수
+        async function emergencyStop() {
+            if (!confirm('🚨 긴급 정지를 실행하시겠습니까?\\n\\n⚠️ 모든 거래가 즉시 중단되고, 활성 포지션이 강제 청산됩니다!\\n\\n이 작업은 되돌릴 수 없습니다.')) {
+                return;
+            }
+            
+            try {
+                showAlert('emergency-alert', '🚨 긴급 정지를 실행하고 있습니다...', 'warning');
+                
+                const response = await fetch('/api/emergency-stop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    showAlert('emergency-alert', '✅ 긴급 정지가 성공적으로 실행되었습니다.\\n시간: ' + new Date(result.timestamp).toLocaleString('ko-KR'), 'success');
+                    
+                    // UI 업데이트
+                    setTimeout(() => {
+                        loadTradingConfig();
+                        loadSystemStatus();
+                    }, 2000);
+                } else {
+                    showAlert('emergency-alert', '❌ 긴급 정지 실패: ' + result.error, 'error');
+                }
+            } catch (error) {
+                showAlert('emergency-alert', '❌ 긴급 정지 요청 실패: ' + error.message, 'error');
+            }
+        }
+
+        // 거래 금액 조절 함수
+        async function setTradingAmount() {
+            try {
+                const totalCapital = document.getElementById('total-capital-input').value;
+                const btcAllocation = parseFloat(document.getElementById('btc-allocation-input').value) / 100;
+                const ethAllocation = parseFloat(document.getElementById('eth-allocation-input').value) / 100;
+                const xrpAllocation = parseFloat(document.getElementById('xrp-allocation-input').value) / 100;
+                
+                if (!totalCapital || !btcAllocation || !ethAllocation || !xrpAllocation) {
+                    showAlert('trading-amount-alert', '모든 필드를 입력해주세요.', 'error');
+                    return;
+                }
+                
+                showAlert('trading-amount-alert', '거래 금액 설정을 저장하고 있습니다...', 'info');
+                
+                const response = await fetch('/api/set-trading-amount', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        totalCapital: parseInt(totalCapital),
+                        btcAllocation: btcAllocation,
+                        ethAllocation: ethAllocation,
+                        xrpAllocation: xrpAllocation
+                    })
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    showAlert('trading-amount-alert', '✅ ' + result.message, 'success');
+                    
+                    // 예상 금액 표시
+                    const amounts = result.settings.estimatedAmounts;
+                    document.getElementById('allocation-preview').style.display = 'block';
+                    document.getElementById('allocation-amounts').innerHTML = 
+                        \`BTC: \${amounts.BTC}만원, ETH: \${amounts.ETH}만원, XRP: \${amounts.XRP}만원\`;
+                } else {
+                    showAlert('trading-amount-alert', '❌ ' + result.error, 'error');
+                }
+            } catch (error) {
+                showAlert('trading-amount-alert', '❌ 거래 금액 설정 실패: ' + error.message, 'error');
+            }
+        }
+
+        // 거래 내역 상세보기 함수
+        async function loadTradeDetails() {
+            try {
+                const symbol = document.getElementById('trade-symbol-filter').value;
+                
+                showAlert('trade-details-alert', '거래 내역을 불러오고 있습니다...', 'info');
+                
+                const response = await fetch(\`/api/trade-details?symbol=\${symbol}&limit=20\`);
+                const result = await response.json();
+                
+                if (result.success) {
+                    // 요약 정보 업데이트
+                    document.getElementById('trade-summary').style.display = 'block';
+                    document.getElementById('total-trades-count').textContent = result.summary.totalTrades;
+                    document.getElementById('profitable-trades-count').textContent = result.summary.profitableTrades;
+                    document.getElementById('total-profit-amount').textContent = (result.summary.totalProfitKrw/10000).toFixed(1) + '만원';
+                    document.getElementById('avg-profit-rate').textContent = result.summary.avgProfitPct.toFixed(2) + '%';
+                    
+                    // 거래 내역 목록 생성
+                    const listElement = document.getElementById('trade-details-list');
+                    if (result.trades.length === 0) {
+                        listElement.innerHTML = '<p style="text-align: center; color: #999; padding: 20px;">거래 내역이 없습니다.</p>';
+                    } else {
+                        listElement.innerHTML = result.trades.map(trade => \`
+                            <div style="border: 1px solid #e1e5e9; border-radius: 8px; padding: 15px; margin-bottom: 10px; background: #f8f9fa;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                    <div>
+                                        <strong>\${trade.symbol}</strong>
+                                        <span style="margin-left: 8px; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; 
+                                              background: \${trade.side === 'long' ? '#d4edda' : '#f8d7da'}; 
+                                              color: \${trade.side === 'long' ? '#155724' : '#721c24'};">
+                                            \${trade.side.toUpperCase()}
+                                        </span>
+                                        <span style="margin-left: 8px; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; background: #e2e3e5;">
+                                            \${trade.strategyType}
+                                        </span>
+                                    </div>
+                                    <div style="text-align: right;">
+                                        <div style="font-weight: bold; color: \${trade.profitKrw > 0 ? '#28a745' : '#dc3545'};">
+                                            \${trade.profitFormatted} (\${trade.profitKrwFormatted})
+                                        </div>
+                                    </div>
+                                </div>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; font-size: 0.85em; color: #666;">
+                                    <div>진입: \${trade.entryKimp.toFixed(2)}%</div>
+                                    <div>청산: \${trade.exitKimp.toFixed(2)}%</div>
+                                    <div>보유: \${trade.holdingTimeFormatted}</div>
+                                </div>
+                                <div style="font-size: 0.8em; color: #999; margin-top: 5px;">
+                                    \${trade.entryTimeFormatted} ~ \${trade.exitTimeFormatted}
+                                </div>
+                            </div>
+                        \`).join('');
+                    }
+                    
+                    showAlert('trade-details-alert', \`✅ 거래 내역 \${result.trades.length}건을 불러왔습니다.\`, 'success');
+                } else {
+                    showAlert('trade-details-alert', '❌ ' + result.error, 'error');
+                }
+            } catch (error) {
+                showAlert('trade-details-alert', '❌ 거래 내역 로드 실패: ' + error.message, 'error');
+            }
+        }
+        
+        // 투자 금액 실시간 계산기
+        function updateAllocationPreview() {
+            const capital = document.getElementById('total-capital-input').value;
+            const btc = document.getElementById('btc-allocation-input').value;
+            const eth = document.getElementById('eth-allocation-input').value;
+            const xrp = document.getElementById('xrp-allocation-input').value;
+            
+            if (capital && btc && eth && xrp) {
+                const btcAmount = Math.floor(capital * btc / 100 / 10000);
+                const ethAmount = Math.floor(capital * eth / 100 / 10000);
+                const xrpAmount = Math.floor(capital * xrp / 100 / 10000);
+                const total = parseInt(btc) + parseInt(eth) + parseInt(xrp);
+                
+                document.getElementById('allocation-preview').style.display = 'block';
+                document.getElementById('allocation-amounts').innerHTML = 
+                    \`BTC: \${btcAmount}만원, ETH: \${ethAmount}만원, XRP: \${xrpAmount}만원 (합계: \${total}%)\`;
+                
+                // 합계가 100%가 아니면 경고 색상
+                document.getElementById('allocation-amounts').style.color = total === 100 ? '#28a745' : '#dc3545';
+            }
+        }
+        
+        // 입력 필드에 이벤트 리스너 추가
+        document.addEventListener('DOMContentLoaded', function() {
+            const inputs = ['total-capital-input', 'btc-allocation-input', 'eth-allocation-input', 'xrp-allocation-input'];
+            inputs.forEach(id => {
+                const element = document.getElementById(id);
+                if (element) {
+                    element.addEventListener('input', updateAllocationPreview);
+                }
+            });
+        });
     </script>
 </body>
 </html>`;
@@ -2183,6 +2583,18 @@ function handleApiRequest(req, res, url) {
                 case 'set-strategy':
                     await apiHandlers.setStrategy(req, res);
                     break;
+                // ============================================================================
+                // 🆕 v4.1 새로운 API 엔드포인트 (기존 코드 수정 없음)
+                // ============================================================================
+                case 'emergency-stop':
+                    await apiHandlers.emergencyStop(req, res);
+                    break;
+                case 'trade-details':
+                    await apiHandlers.getTradeDetails(req, res);
+                    break;
+                case 'set-trading-amount':
+                    await apiHandlers.setTradingAmount(req, res);
+                    break;
                 default:
                     res.writeHead(404);
                     res.end(JSON.stringify({ error: 'API endpoint not found' }));
@@ -2199,8 +2611,8 @@ async function startServer() {
     try {
         // Discord 시작 알림
         await sendDiscordNotification({
-            title: '🚀 트레이딩 모니터 서버 v4.0 시작',
-            description: '**Vultr Cloud** 서버가 성공적으로 시작되었습니다.',
+            title: '🚀 트레이딩 모니터 서버 v4.1 시작',
+            description: '**Vultr Cloud** 서버가 성공적으로 시작되었습니다. (긴급정지/거래내역/금액조절 기능 추가)',
             color: 0x00ff00,
             fields: [
                 { name: '서버 포트', value: CONFIG.port.toString(), inline: true },
